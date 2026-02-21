@@ -23,6 +23,10 @@ func NewUserHandler(userService service.UserService) *UserHandler {
 func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 	// Public routes
 	router.POST("/login", h.Login)
+	router.POST("/refresh", h.RefreshToken)
+
+	// Me route (authenticated)
+	router.GET("/me", middleware.RequireRole("admin", "quản lý", "nhân viên"), h.GetMe)
 
 	// Protected users routes
 	users := router.Group("/users")
@@ -82,6 +86,65 @@ func (h *UserHandler) Login(c *gin.Context) {
 	}
 
 	tokenRes, err := h.userService.Login(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, response.Success(http.StatusOK, tokenRes))
+}
+
+// GetMe handles GET /me to return current authenticated user based on JWT
+// @Summary      Get current user
+// @Description  Get the currently authenticated user
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200      {object}  response.Response{data=service.UserResponse}
+// @Failure      401      {object}  response.Response
+// @Failure      404      {object}  response.Response
+// @Router       /me [get]
+func (h *UserHandler) GetMe(c *gin.Context) {
+	userId, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, "User ID not found in context"))
+		return
+	}
+
+	idStr, ok := userId.(string)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, "Invalid User ID format"))
+		return
+	}
+
+	user, err := h.userService.GetUserByID(c.Request.Context(), idStr)
+	if err != nil {
+		c.JSON(http.StatusNotFound, response.Error(http.StatusNotFound, "User not found"))
+		return
+	}
+
+	c.JSON(http.StatusOK, response.Success(http.StatusOK, user))
+}
+
+// RefreshToken handles POST /refresh to issue new access and refresh tokens
+// @Summary      Refresh token
+// @Description  Issues a new access token and refresh token using a valid refresh token
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        payload  body      service.RefreshTokenRequest   true  "Refresh Token"
+// @Success      200      {object}  response.Response{data=service.TokenResponse}
+// @Failure      400      {object}  response.Response
+// @Failure      401      {object}  response.Response
+// @Router       /refresh [post]
+func (h *UserHandler) RefreshToken(c *gin.Context) {
+	var req service.RefreshTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, "Invalid request payload"))
+		return
+	}
+
+	tokenRes, err := h.userService.RefreshToken(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, err.Error()))
 		return

@@ -16,6 +16,10 @@ type UserRepository interface {
 	List(ctx context.Context, page, limit int) ([]model.User, int64, error)
 	Update(ctx context.Context, user *model.User) error
 	Delete(ctx context.Context, id string) error
+
+	CreateRefreshToken(ctx context.Context, rt *model.RefreshToken) error
+	GetRefreshToken(ctx context.Context, token string) (*model.RefreshToken, error)
+	DeleteRefreshToken(ctx context.Context, token string) error
 }
 
 type userRepository struct {
@@ -80,4 +84,21 @@ func (r *userRepository) Update(ctx context.Context, user *model.User) error {
 
 func (r *userRepository) Delete(ctx context.Context, id string) error {
 	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&model.User{}).Error
+}
+
+func (r *userRepository) CreateRefreshToken(ctx context.Context, rt *model.RefreshToken) error {
+	return r.db.WithContext(ctx).Create(rt).Error
+}
+
+func (r *userRepository) GetRefreshToken(ctx context.Context, token string) (*model.RefreshToken, error) {
+	var rt model.RefreshToken
+	// Preload the associated user
+	if err := r.db.WithContext(ctx).Preload("User").First(&rt, "token = ?", token).Error; err != nil {
+		return nil, err
+	}
+	return &rt, nil
+}
+
+func (r *userRepository) DeleteRefreshToken(ctx context.Context, token string) error {
+	return r.db.WithContext(ctx).Where("token = ?", token).Delete(&model.RefreshToken{}).Error
 }

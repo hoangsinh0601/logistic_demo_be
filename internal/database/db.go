@@ -17,7 +17,14 @@ func NewConnection(dsn string) (*gorm.DB, error) {
 	}
 
 	// Auto-migrate core models
-	err = db.AutoMigrate(&model.User{})
+	err = db.AutoMigrate(
+		&model.User{},
+		&model.Product{},
+		&model.Order{},
+		&model.OrderItem{},
+		&model.InventoryTransaction{},
+		&model.RefreshToken{},
+	)
 	if err != nil {
 		log.Println("WARNING: Failed to auto-migrate models:", err)
 	}

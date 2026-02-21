@@ -4,9 +4,12 @@ import (
 	"backend/internal/model"
 	"backend/internal/repository"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -34,8 +37,13 @@ type LoginUserRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+type RefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
 type TokenResponse struct {
-	Token string `json:"token"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 // DTO for returning User without exposing sensitive data (e.g. password)
@@ -53,6 +61,7 @@ type UserResponse struct {
 type UserService interface {
 	CreateUser(ctx context.Context, req CreateUserRequest) (*UserResponse, error)
 	Login(ctx context.Context, req LoginUserRequest) (*TokenResponse, error)
+	RefreshToken(ctx context.Context, req RefreshTokenRequest) (*TokenResponse, error)
 	GetUserByID(ctx context.Context, id string) (*UserResponse, error)
 	ListUsers(ctx context.Context, page, limit int) ([]UserResponse, int64, error)
 	UpdateUser(ctx context.Context, id string, req UpdateUserRequest) (*UserResponse, error)
@@ -138,12 +147,13 @@ func (s *userService) Login(ctx context.Context, req LoginUserRequest) (*TokenRe
 	}
 
 	// Generate JWT Token
+	// Generate JWT Access Token (15 minutes)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  user.ID.String(),
 		"role": user.Role,
+		"exp":  time.Now().Add(15 * time.Minute).Unix(),
 	})
 
-	// Use same fallback strategy as middleware for simplicity here or get from env centrally
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
 		secret = "default_super_secret_key"
@@ -151,10 +161,86 @@ func (s *userService) Login(ctx context.Context, req LoginUserRequest) (*TokenRe
 
 	tokenString, err := token.SignedString([]byte(secret))
 	if err != nil {
-		return nil, errors.New("failed to generate token")
+		return nil, errors.New("failed to generate access token")
 	}
 
-	return &TokenResponse{Token: tokenString}, nil
+	// Generate a cryptographically secure random Refresh Token (7 days)
+	rawBytes := make([]byte, 32)
+	rand.Read(rawBytes)
+	refreshTokenStr := hex.EncodeToString(rawBytes)
+
+	rt := &model.RefreshToken{
+		UserID:    user.ID,
+		Token:     refreshTokenStr,
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+	}
+
+	// Store Refresh Token in DB
+	if err := s.repo.CreateRefreshToken(ctx, rt); err != nil {
+		return nil, errors.New("failed to store refresh token")
+	}
+
+	return &TokenResponse{
+		Token:        tokenString,
+		RefreshToken: refreshTokenStr,
+	}, nil
+}
+
+func (s *userService) RefreshToken(ctx context.Context, req RefreshTokenRequest) (*TokenResponse, error) {
+	// Find the refresh token
+	rt, err := s.repo.GetRefreshToken(ctx, req.RefreshToken)
+	if err != nil {
+		return nil, errors.New("invalid or expired refresh token")
+	}
+
+	// Check expiration
+	if time.Now().After(rt.ExpiresAt) {
+		// Clean it up immediately
+		s.repo.DeleteRefreshToken(ctx, rt.Token)
+		return nil, errors.New("refresh token expired, please login again")
+	}
+
+	user := rt.User
+
+	// Delete old token (Token Rotation)
+	s.repo.DeleteRefreshToken(ctx, rt.Token)
+
+	// Generate new Access Token (15 minutes)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  user.ID.String(),
+		"role": user.Role,
+		"exp":  time.Now().Add(15 * time.Minute).Unix(),
+	})
+
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "default_super_secret_key"
+	}
+
+	tokenString, err := token.SignedString([]byte(secret))
+	if err != nil {
+		return nil, errors.New("failed to generate access token")
+	}
+
+	// Generate new Refresh Token
+	rawBytes := make([]byte, 32)
+	rand.Read(rawBytes)
+	newRefreshTokenStr := hex.EncodeToString(rawBytes)
+
+	newRt := &model.RefreshToken{
+		UserID:    user.ID,
+		Token:     newRefreshTokenStr,
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+	}
+
+	if err := s.repo.CreateRefreshToken(ctx, newRt); err != nil {
+		return nil, errors.New("failed to store new refresh token")
+	}
+
+	return &TokenResponse{
+		Token:        tokenString,
+		RefreshToken: newRefreshTokenStr,
+	}, nil
 }
 
 func (s *userService) GetUserByID(ctx context.Context, id string) (*UserResponse, error) {

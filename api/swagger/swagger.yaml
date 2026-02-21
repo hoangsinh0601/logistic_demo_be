@@ -12,6 +12,27 @@ definitions:
         description: HTTP status code
         type: integer
     type: object
+  service.CreateOrderRequest:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/service.OrderItemRequest'
+        minItems: 1
+        type: array
+      note:
+        type: string
+      order_code:
+        type: string
+      type:
+        enum:
+        - IMPORT
+        - EXPORT
+        type: string
+    required:
+    - items
+    - order_code
+    - type
+    type: object
   service.CreateUserRequest:
     properties:
       email:
@@ -42,8 +63,43 @@ definitions:
     - email
     - password
     type: object
+  service.OrderItemRequest:
+    properties:
+      product_id:
+        type: string
+      quantity:
+        type: integer
+      unit_price:
+        type: number
+    required:
+    - product_id
+    - quantity
+    - unit_price
+    type: object
+  service.ProductResponse:
+    properties:
+      current_stock:
+        type: integer
+      id:
+        type: string
+      name:
+        type: string
+      price:
+        type: number
+      sku:
+        type: string
+    type: object
+  service.RefreshTokenRequest:
+    properties:
+      refresh_token:
+        type: string
+    required:
+    - refresh_token
+    type: object
   service.TokenResponse:
     properties:
+      refresh_token:
+        type: string
       token:
         type: string
     type: object
@@ -82,6 +138,65 @@ info:
   title: User Management API
   version: "1.0"
 paths:
+  /api/orders:
+    post:
+      consumes:
+      - application/json
+      description: Creates an EXPORT or IMPORT order manipulating stock via strict
+        ACID transactions and broadcasting WS updates
+      parameters:
+      - description: Create Order Payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/service.CreateOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/response.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Create inventory order
+      tags:
+      - inventory
+  /api/products:
+    get:
+      description: Retrieves list of products with current stock
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/service.ProductResponse'
+                  type: array
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get products
+      tags:
+      - inventory
   /login:
     post:
       consumes:
@@ -115,6 +230,42 @@ paths:
           schema:
             $ref: '#/definitions/response.Response'
       summary: Login user
+      tags:
+      - auth
+  /refresh:
+    post:
+      consumes:
+      - application/json
+      description: Issues a new access token and refresh token using a valid refresh
+        token
+      parameters:
+      - description: Refresh Token
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/service.RefreshTokenRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.TokenResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Refresh token
       tags:
       - auth
   /users:

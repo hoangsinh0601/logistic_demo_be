@@ -12,7 +12,7 @@ import (
 
 var jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 
-func getJWTSecret() []byte {
+func GetJWTSecret() []byte {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
 		secret = "default_super_secret_key" // In production, make sure to set JWT_SECRET
@@ -41,7 +41,7 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, jwt.ErrSignatureInvalid
 			}
-			return getJWTSecret(), nil
+			return GetJWTSecret(), nil
 		})
 
 		if err != nil || !token.Valid {

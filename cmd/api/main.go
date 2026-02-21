@@ -4,11 +4,14 @@ import (
 	_ "backend/api/swagger" // swagger docs
 	"backend/internal/database"
 	"backend/internal/handler"
+	"backend/internal/middleware"
 	"backend/internal/repository"
 	"backend/internal/service"
+	"backend/internal/websocket"
 	"log"
 	"os"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	swaggerFiles "github.com/swaggo/files"
@@ -62,13 +65,27 @@ func main() {
 	}
 	log.Println("Connected to PostgreSQL successfully.")
 
+	// Set up WebSocket Hub
+	wsHub := websocket.NewHub()
+	go wsHub.Run()
+
 	// Set up dependencies (Repository -> Service -> Handler)
 	userRepo := repository.NewUserRepository(db)
 	userService := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userService)
 
+	inventoryService := service.NewInventoryService(db, wsHub)
+	inventoryHandler := handler.NewInventoryHandler(inventoryService)
+
 	// Set up Gin Router
 	router := gin.Default()
+
+	// CORS configuration
+	corsConfig := cors.DefaultConfig()
+	corsConfig.AllowOrigins = []string{"http://localhost:5173", "http://127.0.0.1:5173"} // Frontend URL
+	corsConfig.AllowCredentials = true
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization", "Accept"}
+	router.Use(cors.New(corsConfig))
 
 	// Swagger route
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -78,9 +95,15 @@ func main() {
 		c.JSON(200, gin.H{"status": "OK"})
 	})
 
+	// WebSocket endpoint
+	router.GET("/ws", func(c *gin.Context) {
+		websocket.ServeWs(wsHub, c, middleware.GetJWTSecret())
+	})
+
 	// Register API Routes
 	apiGroup := router.Group("")
 	userHandler.RegisterRoutes(apiGroup)
+	inventoryHandler.RegisterRoutes(apiGroup)
 
 	port := os.Getenv("PORT")
 	if port == "" {
