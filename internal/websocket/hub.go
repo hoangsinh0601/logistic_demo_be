@@ -80,41 +80,34 @@ func (h *Hub) Run() {
 // writePump handles writing messages from the Hub to the WebSocket connection
 func (c *Client) writePump() {
 	defer func() {
-		c.Conn.Close()
+		_ = c.Conn.Close()
 	}()
-	for {
-		select {
-		case message, ok := <-c.Send:
-			if !ok {
-				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
+	for message := range c.Send {
+		w, err := c.Conn.NextWriter(websocket.TextMessage)
+		if err != nil {
+			return
+		}
+		_, _ = w.Write(message)
 
-			w, err := c.Conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			w.Write(message)
+		// Fast track writing queued messages
+		n := len(c.Send)
+		for i := 0; i < n; i++ {
+			_, _ = w.Write([]byte{'\n'})
+			_, _ = w.Write(<-c.Send)
+		}
 
-			// Fast track writing queued messages
-			n := len(c.Send)
-			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.Send)
-			}
-
-			if err := w.Close(); err != nil {
-				return
-			}
+		if err := w.Close(); err != nil {
+			return
 		}
 	}
+	_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 }
 
 // readPump pumps messages from the WebSocket connection to the hub
 func (c *Client) readPump() {
 	defer func() {
 		c.Hub.unregister <- c
-		c.Conn.Close()
+		_ = c.Conn.Close()
 	}()
 	for {
 		// Just reading to keep connection alive or handle client messages if necessary

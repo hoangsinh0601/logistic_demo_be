@@ -166,7 +166,7 @@ func (s *userService) Login(ctx context.Context, req LoginUserRequest) (*TokenRe
 
 	// Generate a cryptographically secure random Refresh Token (7 days)
 	rawBytes := make([]byte, 32)
-	rand.Read(rawBytes)
+	_, _ = rand.Read(rawBytes)
 	refreshTokenStr := hex.EncodeToString(rawBytes)
 
 	rt := &model.RefreshToken{
@@ -196,14 +196,14 @@ func (s *userService) RefreshToken(ctx context.Context, req RefreshTokenRequest)
 	// Check expiration
 	if time.Now().After(rt.ExpiresAt) {
 		// Clean it up immediately
-		s.repo.DeleteRefreshToken(ctx, rt.Token)
+		_ = s.repo.DeleteRefreshToken(ctx, rt.Token)
 		return nil, errors.New("refresh token expired, please login again")
 	}
 
 	user := rt.User
 
 	// Delete old token (Token Rotation)
-	s.repo.DeleteRefreshToken(ctx, rt.Token)
+	_ = s.repo.DeleteRefreshToken(ctx, rt.Token)
 
 	// Generate new Access Token (15 minutes)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -224,7 +224,7 @@ func (s *userService) RefreshToken(ctx context.Context, req RefreshTokenRequest)
 
 	// Generate new Refresh Token
 	rawBytes := make([]byte, 32)
-	rand.Read(rawBytes)
+	_, _ = rand.Read(rawBytes)
 	newRefreshTokenStr := hex.EncodeToString(rawBytes)
 
 	newRt := &model.RefreshToken{
