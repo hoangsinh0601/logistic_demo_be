@@ -57,7 +57,9 @@ func (h *InventoryHandler) CreateProduct(c *gin.Context) {
 		return
 	}
 
-	product, err := h.inventoryService.CreateProduct(c.Request.Context(), req)
+	userID := c.GetString("userID")
+
+	product, err := h.inventoryService.CreateProduct(c.Request.Context(), userID, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, err.Error()))
 		return
@@ -80,7 +82,9 @@ func (h *InventoryHandler) UpdateProduct(c *gin.Context) {
 		return
 	}
 
-	product, err := h.inventoryService.UpdateProduct(c.Request.Context(), id, req)
+	userID := c.GetString("userID")
+
+	product, err := h.inventoryService.UpdateProduct(c.Request.Context(), userID, id, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, err.Error()))
 		return
@@ -97,7 +101,9 @@ func (h *InventoryHandler) DeleteProduct(c *gin.Context) {
 		return
 	}
 
-	err := h.inventoryService.DeleteProduct(c.Request.Context(), id)
+	userID := c.GetString("userID")
+
+	err := h.inventoryService.DeleteProduct(c.Request.Context(), userID, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, err.Error()))
 		return
@@ -126,7 +132,8 @@ func (h *InventoryHandler) CreateOrder(c *gin.Context) {
 	}
 
 	// Strictly invoke Service layer inside WS+Tx orchestrator
-	err := h.inventoryService.CreateOrder(c.Request.Context(), req)
+	userID := c.GetString("userID")
+	err := h.inventoryService.CreateOrder(c.Request.Context(), userID, req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, err.Error()))
 		return

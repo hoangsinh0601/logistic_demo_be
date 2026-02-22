@@ -72,10 +72,13 @@ func main() {
 	// Set up dependencies (Repository -> Service -> Handler)
 	userRepo := repository.NewUserRepository(db)
 	userService := service.NewUserService(userRepo)
-	userHandler := handler.NewUserHandler(userService)
-
 	inventoryService := service.NewInventoryService(db, wsHub)
+	auditService := service.NewAuditService(db)
+
+	// Initialize Handlers
+	userHandler := handler.NewUserHandler(userService)
 	inventoryHandler := handler.NewInventoryHandler(inventoryService)
+	auditHandler := handler.NewAuditHandler(auditService)
 
 	// Set up Gin Router
 	router := gin.Default()
@@ -101,9 +104,10 @@ func main() {
 	})
 
 	// Register API Routes
-	apiGroup := router.Group("")
-	userHandler.RegisterRoutes(apiGroup)
-	inventoryHandler.RegisterRoutes(apiGroup)
+	// API Routing
+	userHandler.RegisterRoutes(router.Group(""))
+	inventoryHandler.RegisterRoutes(router.Group(""))
+	auditHandler.RegisterRoutes(router.Group(""))
 
 	port := os.Getenv("PORT")
 	if port == "" {

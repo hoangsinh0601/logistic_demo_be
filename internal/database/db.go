@@ -24,6 +24,7 @@ func NewConnection(dsn string) (*gorm.DB, error) {
 		&model.OrderItem{},
 		&model.InventoryTransaction{},
 		&model.RefreshToken{},
+		&model.AuditLog{},
 	)
 	if err != nil {
 		log.Println("WARNING: Failed to auto-migrate models:", err)
