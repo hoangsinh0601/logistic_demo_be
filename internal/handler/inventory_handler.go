@@ -20,7 +20,7 @@ func NewInventoryHandler(inventoryService service.InventoryService) *InventoryHa
 
 func (h *InventoryHandler) RegisterRoutes(router *gin.RouterGroup) {
 	inventory := router.Group("/api")
-	inventory.Use(middleware.RequireRole("admin", "staff")) // Protect all inventory routes
+	inventory.Use(middleware.RequireRole("admin", "manager", "staff")) // Protect all inventory routes
 	{
 		inventory.GET("/products", h.GetProducts)
 		inventory.POST("/products", h.CreateProduct)

@@ -26,11 +26,12 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 	router.POST("/refresh", h.RefreshToken)
 
 	// Me route (authenticated)
-	router.GET("/me", middleware.RequireRole("admin", "quản lý", "nhân viên"), h.GetMe)
+	router.GET("/me", middleware.RequireRole("admin", "manager", "staff"), h.GetMe)
 
 	// Protected users routes
 	users := router.Group("/users")
-	users.Use(middleware.RequireRole("admin"))
+	users.Use(middleware.RequireRole("admin", "manager"))
+
 	{
 		users.POST("", h.CreateUser)
 		users.GET("", h.ListUsers)

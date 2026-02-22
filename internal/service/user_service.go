@@ -79,7 +79,7 @@ func NewUserService(repo repository.UserRepository) UserService {
 
 // Helper: check if role is allowed
 func validateRole(role string) bool {
-	return role == "admin" || role == "quản lý" || role == "nhân viên"
+	return role == "admin" || role == "manager" || role == "staff"
 }
 
 // Helper: parse model to standard json API response
@@ -97,7 +97,7 @@ func mapToResponse(user *model.User) *UserResponse {
 
 func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*UserResponse, error) {
 	if !validateRole(req.Role) {
-		return nil, errors.New("invalid role: must be admin, quản lý, or nhân viên")
+		return nil, errors.New("invalid role: must be admin, manager, or staff")
 	}
 
 	// Basic Email format validation fallback
@@ -280,7 +280,7 @@ func (s *userService) UpdateUser(ctx context.Context, id string, req UpdateUserR
 
 	if req.Role != "" {
 		if !validateRole(req.Role) {
-			return nil, errors.New("invalid role: must be admin, quản lý, or nhân viên")
+			return nil, errors.New("invalid role: must be admin, manager, or staff")
 		}
 		user.Role = req.Role
 	}

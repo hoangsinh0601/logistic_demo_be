@@ -153,7 +153,7 @@ func ServeWs(hub *Hub, c *gin.Context, secret []byte) {
 	}
 
 	role, _ := claims["role"].(string)
-	if role != "admin" && role != "quản lý" && role != "nhân viên" {
+	if role != "admin" && role != "manager" && role != "staff" {
 		log.Println("WebSocket connection rejected: inadequate permissions")
 		c.AbortWithStatus(http.StatusForbidden)
 		return
