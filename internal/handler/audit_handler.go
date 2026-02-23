@@ -21,7 +21,7 @@ func NewAuditHandler(auditService service.AuditService) *AuditHandler {
 
 func (h *AuditHandler) RegisterRoutes(router *gin.RouterGroup) {
 	group := router.Group("/api/audit-logs")
-	group.Use(middleware.RequireRole("admin", "manager")) // Protect history logs
+	group.Use(middleware.RequireRole("admin", "manager", "staff")) // Protect history logs
 	{
 		group.GET("", h.GetAuditLogs)
 	}

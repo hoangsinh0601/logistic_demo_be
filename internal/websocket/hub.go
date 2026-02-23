@@ -123,8 +123,11 @@ func (c *Client) readPump() {
 
 // ServeWs handles websocket requests from the peer
 func ServeWs(hub *Hub, c *gin.Context, secret []byte) {
-	// 1. Authenticate via token query param
-	tokenString := c.Query("token")
+	// 1. Authenticate via cookie first, fallback to query param
+	tokenString, _ := c.Cookie("access_token")
+	if tokenString == "" {
+		tokenString = c.Query("token")
+	}
 	if tokenString == "" {
 		log.Println("WebSocket connection rejected: missing token")
 		c.AbortWithStatus(http.StatusUnauthorized)

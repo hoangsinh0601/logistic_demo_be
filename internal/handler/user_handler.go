@@ -24,6 +24,7 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 	// Public routes
 	router.POST("/login", h.Login)
 	router.POST("/refresh", h.RefreshToken)
+	router.POST("/logout", h.Logout)
 
 	// Me route (authenticated)
 	router.GET("/me", middleware.RequireRole("admin", "manager", "staff"), h.GetMe)
@@ -92,6 +93,9 @@ func (h *UserHandler) Login(c *gin.Context) {
 		return
 	}
 
+	// Set tokens as HttpOnly cookies
+	middleware.SetTokenCookies(c, tokenRes.Token, tokenRes.RefreshToken)
+
 	c.JSON(http.StatusOK, response.Success(http.StatusOK, tokenRes))
 }
 
@@ -139,10 +143,17 @@ func (h *UserHandler) GetMe(c *gin.Context) {
 // @Failure      401      {object}  response.Response
 // @Router       /refresh [post]
 func (h *UserHandler) RefreshToken(c *gin.Context) {
+	// Try reading refresh_token from cookie first, fallback to body
+	refreshToken, cookieErr := c.Cookie("refresh_token")
 	var req service.RefreshTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, "Invalid request payload"))
-		return
+
+	if cookieErr != nil || refreshToken == "" {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, "Invalid request payload"))
+			return
+		}
+	} else {
+		req = service.RefreshTokenRequest{RefreshToken: refreshToken}
 	}
 
 	tokenRes, err := h.userService.RefreshToken(c.Request.Context(), req)
@@ -151,7 +162,16 @@ func (h *UserHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
+	// Set new tokens as HttpOnly cookies
+	middleware.SetTokenCookies(c, tokenRes.Token, tokenRes.RefreshToken)
+
 	c.JSON(http.StatusOK, response.Success(http.StatusOK, tokenRes))
+}
+
+// Logout handles POST /logout to clear auth cookies
+func (h *UserHandler) Logout(c *gin.Context) {
+	middleware.ClearTokenCookies(c)
+	c.JSON(http.StatusOK, response.Success(http.StatusOK, "Logged out"))
 }
 
 // ListUsers handles GET /users and extracts pagination controls

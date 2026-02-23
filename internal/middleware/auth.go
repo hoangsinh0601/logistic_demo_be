@@ -18,22 +18,41 @@ func GetJWTSecret() []byte {
 	return []byte(secret)
 }
 
+// SetTokenCookies sets access_token and refresh_token as HttpOnly cookies
+func SetTokenCookies(c *gin.Context, accessToken, refreshToken string) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	// access_token: 24h, path=/, HttpOnly
+	c.SetCookie("access_token", accessToken, 3600*24, "/", "", false, true)
+	// refresh_token: 7 days, path=/refresh only, HttpOnly
+	c.SetCookie("refresh_token", refreshToken, 3600*24*7, "/", "", false, true)
+}
+
+// ClearTokenCookies removes access_token and refresh_token cookies
+func ClearTokenCookies(c *gin.Context) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("access_token", "", -1, "/", "", false, true)
+	c.SetCookie("refresh_token", "", -1, "/", "", false, true)
+}
+
 // RequireRole Middleware validates the JWT token and checks if the user's role exists in the allowedRoles list
 func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, "Authorization header is missing"))
-			return
-		}
+		// Try cookie first, fallback to Authorization header
+		tokenString, cookieErr := c.Cookie("access_token")
+		if cookieErr != nil || tokenString == "" {
+			authHeader := c.GetHeader("Authorization")
+			if authHeader == "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, "Authorization is missing"))
+				return
+			}
 
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, "Invalid authorization format. Expected 'Bearer <token>'"))
-			return
+			parts := strings.Split(authHeader, " ")
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, response.Error(http.StatusUnauthorized, "Invalid authorization format. Expected 'Bearer <token>'"))
+				return
+			}
+			tokenString = parts[1]
 		}
-
-		tokenString := parts[1]
 
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
