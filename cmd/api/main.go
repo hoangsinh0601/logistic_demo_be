@@ -74,18 +74,20 @@ func main() {
 	userService := service.NewUserService(userRepo)
 	inventoryService := service.NewInventoryService(db, wsHub)
 	auditService := service.NewAuditService(db)
+	statisticsService := service.NewStatisticsService(db)
 
 	// Initialize Handlers
 	userHandler := handler.NewUserHandler(userService)
 	inventoryHandler := handler.NewInventoryHandler(inventoryService)
 	auditHandler := handler.NewAuditHandler(auditService)
+	statisticsHandler := handler.NewStatisticsHandler(statisticsService)
 
 	// Set up Gin Router
 	router := gin.Default()
 
 	// CORS configuration
 	corsConfig := cors.DefaultConfig()
-	corsConfig.AllowOrigins = []string{"http://localhost:5173", "http://127.0.0.1:5173"} // Frontend URL
+	corsConfig.AllowOrigins = []string{"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174"} // Frontend URL
 	corsConfig.AllowCredentials = true
 	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization", "Accept"}
 	router.Use(cors.New(corsConfig))
@@ -108,6 +110,7 @@ func main() {
 	userHandler.RegisterRoutes(router.Group(""))
 	inventoryHandler.RegisterRoutes(router.Group(""))
 	auditHandler.RegisterRoutes(router.Group(""))
+	statisticsHandler.RegisterRoutes(router.Group(""))
 
 	port := os.Getenv("PORT")
 	if port == "" {
