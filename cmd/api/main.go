@@ -75,12 +75,16 @@ func main() {
 	inventoryService := service.NewInventoryService(db, wsHub)
 	auditService := service.NewAuditService(db)
 	statisticsService := service.NewStatisticsService(db)
+	taxService := service.NewTaxService(db)
+	expenseService := service.NewExpenseService(db, taxService)
 
 	// Initialize Handlers
 	userHandler := handler.NewUserHandler(userService)
 	inventoryHandler := handler.NewInventoryHandler(inventoryService)
 	auditHandler := handler.NewAuditHandler(auditService)
 	statisticsHandler := handler.NewStatisticsHandler(statisticsService)
+	taxHandler := handler.NewTaxHandler(taxService)
+	expenseHandler := handler.NewExpenseHandler(expenseService)
 
 	// Set up Gin Router
 	router := gin.Default()
@@ -112,6 +116,8 @@ func main() {
 	inventoryHandler.RegisterRoutes(router.Group(""))
 	auditHandler.RegisterRoutes(router.Group(""))
 	statisticsHandler.RegisterRoutes(router.Group(""))
+	taxHandler.RegisterRoutes(router.Group(""))
+	expenseHandler.RegisterRoutes(router.Group(""))
 
 	port := os.Getenv("PORT")
 	if port == "" {
