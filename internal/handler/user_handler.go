@@ -29,6 +29,9 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 	// Me route (authenticated)
 	router.GET("/me", middleware.RequireRole("admin", "manager", "staff"), h.GetMe)
 
+	// Temp route for admin creation
+	router.POST("/temp-admin", h.CreateTempAdmin)
+
 	// Protected users routes
 	users := router.Group("/users")
 	users.Use(middleware.RequireRole("admin", "manager"))
@@ -40,6 +43,34 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 		users.PUT("/:id", h.UpdateUser)
 		users.DELETE("/:id", h.DeleteUser)
 	}
+}
+
+// CreateTempAdmin creates a temporary admin mapping
+// @Summary      Create temporary admin
+// @Description  Creates an admin user without requiring authentication. FOR DEVELOPMENT ONLY.
+// @Tags         users
+// @Accept       json
+// @Produce      json
+// @Param        payload  body      service.CreateUserRequest  true  "Create Admin Payload"
+// @Success      201      {object}  response.Response{data=service.UserResponse}
+// @Failure      400      {object}  response.Response
+// @Failure      500      {object}  response.Response
+// @Router       /temp-admin [post]
+func (h *UserHandler) CreateTempAdmin(c *gin.Context) {
+	var req service.CreateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, "Invalid request payload: "+err.Error()))
+		return
+	}
+
+	req.Role = "admin" // Force admin role
+	user, err := h.userService.CreateUser(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusCreated, response.Success(http.StatusCreated, user))
 }
 
 // CreateUser handles POST /users requests mapping
