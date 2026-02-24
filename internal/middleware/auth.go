@@ -20,18 +20,31 @@ func GetJWTSecret() []byte {
 
 // SetTokenCookies sets access_token and refresh_token as HttpOnly cookies
 func SetTokenCookies(c *gin.Context, accessToken, refreshToken string) {
-	c.SetSameSite(http.SameSiteLaxMode)
-	// access_token: 24h, path=/, HttpOnly
-	c.SetCookie("access_token", accessToken, 3600*24, "/", "", false, true)
-	// refresh_token: 7 days, path=/refresh only, HttpOnly
-	c.SetCookie("refresh_token", refreshToken, 3600*24*7, "/", "", false, true)
+	// For cross-origin requests (e.g., frontend on one domain, backend on another),
+	// we must use SameSiteNoneMode and Secure = true.
+	// In development (localhost), Secure might need to be false unless using HTTPS.
+	secure := false
+	if os.Getenv("GIN_MODE") == "release" || os.Getenv("RENDER") != "" {
+		secure = true
+	}
+
+	c.SetSameSite(http.SameSiteNoneMode)
+	// access_token: 24h, path=/, domain="", secure, HttpOnly
+	c.SetCookie("access_token", accessToken, 3600*24, "/", "", secure, true)
+	// refresh_token: 7 days, path=/, domain="", secure, HttpOnly
+	c.SetCookie("refresh_token", refreshToken, 3600*24*7, "/", "", secure, true)
 }
 
 // ClearTokenCookies removes access_token and refresh_token cookies
 func ClearTokenCookies(c *gin.Context) {
-	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("access_token", "", -1, "/", "", false, true)
-	c.SetCookie("refresh_token", "", -1, "/", "", false, true)
+	secure := false
+	if os.Getenv("GIN_MODE") == "release" || os.Getenv("RENDER") != "" {
+		secure = true
+	}
+
+	c.SetSameSite(http.SameSiteNoneMode)
+	c.SetCookie("access_token", "", -1, "/", "", secure, true)
+	c.SetCookie("refresh_token", "", -1, "/", "", secure, true)
 }
 
 // RequireRole Middleware validates the JWT token and checks if the user's role exists in the allowedRoles list
