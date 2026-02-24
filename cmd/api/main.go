@@ -1,7 +1,7 @@
 package main
 
 import (
-	_ "backend/api/swagger" // swagger docs
+	swaggerDocs "backend/api/swagger" // swagger docs
 	"backend/internal/database"
 	"backend/internal/handler"
 	"backend/internal/middleware"
@@ -67,6 +67,12 @@ func main() {
 	router.Use(cors.New(corsConfig))
 
 	// 4. Immediate Routes (Health & Swagger)
+	if externalURL := os.Getenv("RENDER_EXTERNAL_URL"); externalURL != "" {
+		swaggerDocs.SwaggerInfo.Host = strings.TrimPrefix(externalURL, "https://")
+	} else {
+		swaggerDocs.SwaggerInfo.Host = getEnv("SWAGGER_HOST", "localhost:"+port)
+	}
+
 	router.GET("/health", func(c *gin.Context) {
 		if !isReady {
 			c.JSON(http.StatusServiceUnavailable, gin.H{
