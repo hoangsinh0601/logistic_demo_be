@@ -10,6 +10,7 @@ import (
 	"backend/internal/websocket"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -27,56 +28,52 @@ import (
 // @in header
 // @name Authorization
 func main() {
-	if err := godotenv.Load("configs/.env"); err != nil {
-		log.Println("No configs/.env file found or error loading it")
+	// 1. Chỉ load .env nếu chạy ở local, trên Render sẽ bỏ qua bước này
+	if os.Getenv("RENDER") == "" {
+		if err := godotenv.Load("configs/.env"); err != nil {
+			log.Println("Note: No configs/.env file found, using system environment variables")
+		}
 	}
 
-	// Database Configuration
+	// 2. Cấu hình Database DSN
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dbHost := os.Getenv("DB_HOST")
-		dbPort := os.Getenv("DB_PORT")
-		dbUser := os.Getenv("DB_USER")
-		dbPassword := os.Getenv("DB_PASSWORD")
-		dbName := os.Getenv("DB_NAME")
-		dbSslMode := os.Getenv("DB_SSLMODE")
+		// Fallback build DSN thủ công (thường dùng cho local)
+		dbHost := getEnv("DB_HOST", "localhost")
+		dbPort := getEnv("DB_PORT", "5432")
+		dbUser := getEnv("DB_USER", "postgres")
+		dbPassword := getEnv("DB_PASSWORD", "postgres")
+		dbName := getEnv("DB_NAME", "postgres")
+		dbSslMode := getEnv("DB_SSLMODE", "disable")
 
-		if dbHost == "" {
-			dbHost = "localhost"
-		}
-		if dbPort == "" {
-			dbPort = "5432"
-		}
-		if dbUser == "" {
-			dbUser = "postgres"
-		}
-		if dbPassword == "" {
-			dbPassword = "postgres"
-		}
-		if dbName == "" {
-			dbName = "postgres"
-		}
-		if dbSslMode == "" {
-			dbSslMode = "disable"
-		}
 		dsn = "postgres://" + dbUser + ":" + dbPassword + "@" + dbHost + ":" + dbPort + "/" + dbName + "?sslmode=" + dbSslMode
 		log.Println("Constructed DSN from individual variables.")
 	} else {
+		// Fix lỗi nếu Render đưa link postgres:// nhưng thư viện Go yêu cầu sslmode
+		if !strings.Contains(dsn, "sslmode=") {
+			if strings.Contains(dsn, "?") {
+				dsn += "&sslmode=require"
+			} else {
+				dsn += "?sslmode=require"
+			}
+		}
 		log.Println("Using DATABASE_URL from environment.")
 	}
 
-	log.Println("Attempting to connect to PostgreSQL...")
+	// 3. Kết nối Database (Bước này dễ gây crash làm Render báo lỗi Port)
+	log.Println("Connecting to Database...")
 	db, err := database.NewConnection(dsn)
 	if err != nil {
-		log.Fatalf("Database connection failed: %v", err)
+		log.Printf("CRITICAL: Database connection failed: %v", err)
+		// Thay vì Fatalf ngay, ta có thể log lỗi để Render không bị loop restart quá nhanh
+		os.Exit(1)
 	}
-	log.Println("Connected to PostgreSQL successfully.")
+	log.Println("Connected to Database successfully.")
 
-	// Set up WebSocket Hub
+	// 4. Khởi tạo Services & Handlers
 	wsHub := websocket.NewHub()
 	go wsHub.Run()
 
-	// Set up dependencies (Repository -> Service -> Handler)
 	userRepo := repository.NewUserRepository(db)
 	userService := service.NewUserService(userRepo)
 	inventoryService := service.NewInventoryService(db, wsHub)
@@ -85,7 +82,6 @@ func main() {
 	taxService := service.NewTaxService(db)
 	expenseService := service.NewExpenseService(db, taxService)
 
-	// Initialize Handlers
 	userHandler := handler.NewUserHandler(userService)
 	inventoryHandler := handler.NewInventoryHandler(inventoryService)
 	auditHandler := handler.NewAuditHandler(auditService)
@@ -93,32 +89,34 @@ func main() {
 	taxHandler := handler.NewTaxHandler(taxService)
 	expenseHandler := handler.NewExpenseHandler(expenseService)
 
-	// Set up Gin Router
+	// 5. Cấu hình Gin
+	if os.Getenv("GIN_MODE") == "release" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	router := gin.Default()
 
-	// CORS configuration
+	// CORS nâng cao (Thêm domain của frontend trên Render vào đây)
 	corsConfig := cors.DefaultConfig()
-	corsConfig.AllowOrigins = []string{"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174"} // Frontend URL
+	corsConfig.AllowOrigins = []string{
+		"http://localhost:5173",
+		"http://127.0.0.1:5173",
+		os.Getenv("FRONTEND_URL"), // Add your Render frontend URL here
+	}
+	// Xóa các entry trống nếu FRONTEND_URL chưa set
 	corsConfig.AllowCredentials = true
 	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization", "Accept"}
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 	router.Use(cors.New(corsConfig))
 
-	// Swagger route
+	// Routes
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-
-	// Health check
 	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "OK"})
+		c.JSON(200, gin.H{"status": "UP", "message": "Server is healthy"})
 	})
-
-	// WebSocket endpoint
 	router.GET("/ws", func(c *gin.Context) {
 		websocket.ServeWs(wsHub, c, middleware.GetJWTSecret())
 	})
 
-	// Register API Routes
-	// API Routing
 	userHandler.RegisterRoutes(router.Group(""))
 	inventoryHandler.RegisterRoutes(router.Group(""))
 	auditHandler.RegisterRoutes(router.Group(""))
@@ -126,13 +124,23 @@ func main() {
 	taxHandler.RegisterRoutes(router.Group(""))
 	expenseHandler.RegisterRoutes(router.Group(""))
 
+	// 6. Chạy Server với PORT từ Render
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	log.Printf("Server starting on 0.0.0.0:%s", port)
-	if err := router.Run("0.0.0.0:" + port); err != nil {
+	log.Printf("Server is starting and listening on port %s...", port)
+	// Render yêu cầu bind vào 0.0.0.0
+	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
+}
+
+// Hàm hỗ trợ lấy env với giá trị mặc định
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
 }
