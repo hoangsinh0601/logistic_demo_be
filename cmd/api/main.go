@@ -124,6 +124,32 @@ func main() {
 		taxHandler := handler.NewTaxHandler(taxService)
 		expenseHandler := handler.NewExpenseHandler(expenseService)
 
+		// TEMP: Route to create first admin (remove later)
+		// @Summary      Create temporary admin
+		// @Description  Creates an admin user without requiring authentication. FOR DEVELOPMENT ONLY.
+		// @Tags         users
+		// @Accept       json
+		// @Produce      json
+		// @Param        payload  body      service.CreateUserRequest  true  "Create Admin Payload"
+		// @Success      201      {object}  response.Response
+		// @Failure      400      {object}  response.Response
+		// @Failure      500      {object}  response.Response
+		// @Router       /api/temp-admin [post]
+		router.POST("/api/temp-admin", func(c *gin.Context) {
+			var req service.CreateUserRequest
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": "Invalid request"})
+				return
+			}
+			req.Role = "admin" // Force admin role
+			user, err := userService.CreateUser(c.Request.Context(), req)
+			if err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(201, gin.H{"message": "Admin created", "data": user})
+		})
+
 		// Register API Routes
 		apiGroup := router.Group("")
 		userHandler.RegisterRoutes(apiGroup)

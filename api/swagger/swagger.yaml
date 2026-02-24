@@ -138,6 +138,36 @@ info:
   title: User Management API
   version: "1.0"
 paths:
+  /api/audit-logs:
+    get:
+      description: Retrieves list of audit logs securely mapping User interaction
+        history
+      parameters:
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Number of items per page (default 20)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  type: object
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Get audit logs
+      tags:
+      - audit
   /api/orders:
     post:
       consumes:
@@ -197,6 +227,49 @@ paths:
       summary: Get products
       tags:
       - inventory
+  /api/statistics:
+    get:
+      consumes:
+      - application/json
+      description: Get import/export totals, profit and top ranked items bounded by
+        time
+      parameters:
+      - description: Start Date (RFC3339)
+        in: query
+        name: start_date
+        type: string
+      - description: End Date (RFC3339)
+        in: query
+        name: end_date
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid date format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get Dashboard Statistics
+      tags:
+      - Statistics
   /login:
     post:
       consumes:
@@ -230,6 +303,34 @@ paths:
           schema:
             $ref: '#/definitions/response.Response'
       summary: Login user
+      tags:
+      - auth
+  /me:
+    get:
+      description: Get the currently authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.UserResponse'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get current user
       tags:
       - auth
   /refresh:
