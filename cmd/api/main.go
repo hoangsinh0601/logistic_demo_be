@@ -52,7 +52,11 @@ func main() {
 
 	// 3. Configure CORS (Cleanup empty FRONTEND_URL)
 	corsConfig := cors.DefaultConfig()
-	origins := []string{"http://localhost:5173", "http://127.0.0.1:5173"}
+	origins := []string{
+		"http://localhost:5173",
+		"http://127.0.0.1:5173",
+		"https://logistic-demo-fe.onrender.com",
+	}
 	if feURL := os.Getenv("FRONTEND_URL"); feURL != "" {
 		origins = append(origins, feURL)
 	}
