@@ -31,34 +31,41 @@ func main() {
 		log.Println("No configs/.env file found or error loading it")
 	}
 
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbUser := os.Getenv("DB_USER")
-	dbPassword := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
-	dbSslMode := os.Getenv("DB_SSLMODE")
+	// Database Configuration
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dbHost := os.Getenv("DB_HOST")
+		dbPort := os.Getenv("DB_PORT")
+		dbUser := os.Getenv("DB_USER")
+		dbPassword := os.Getenv("DB_PASSWORD")
+		dbName := os.Getenv("DB_NAME")
+		dbSslMode := os.Getenv("DB_SSLMODE")
 
-	if dbHost == "" {
-		dbHost = "localhost"
-	}
-	if dbPort == "" {
-		dbPort = "5432"
-	}
-	if dbUser == "" {
-		dbUser = "postgres"
-	}
-	if dbPassword == "" {
-		dbPassword = "postgres"
-	}
-	if dbName == "" {
-		dbName = "postgres"
-	}
-	if dbSslMode == "" {
-		dbSslMode = "disable"
+		if dbHost == "" {
+			dbHost = "localhost"
+		}
+		if dbPort == "" {
+			dbPort = "5432"
+		}
+		if dbUser == "" {
+			dbUser = "postgres"
+		}
+		if dbPassword == "" {
+			dbPassword = "postgres"
+		}
+		if dbName == "" {
+			dbName = "postgres"
+		}
+		if dbSslMode == "" {
+			dbSslMode = "disable"
+		}
+		dsn = "postgres://" + dbUser + ":" + dbPassword + "@" + dbHost + ":" + dbPort + "/" + dbName + "?sslmode=" + dbSslMode
+		log.Println("Constructed DSN from individual variables.")
+	} else {
+		log.Println("Using DATABASE_URL from environment.")
 	}
 
-	dsn := "postgres://" + dbUser + ":" + dbPassword + "@" + dbHost + ":" + dbPort + "/" + dbName + "?sslmode=" + dbSslMode
-
+	log.Println("Attempting to connect to PostgreSQL...")
 	db, err := database.NewConnection(dsn)
 	if err != nil {
 		log.Fatalf("Database connection failed: %v", err)
@@ -124,8 +131,8 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Server listening on :%s", port)
-	if err := router.Run(":" + port); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	log.Printf("Server starting on 0.0.0.0:%s", port)
+	if err := router.Run("0.0.0.0:" + port); err != nil {
+		log.Fatalf("Server failed to start: %v", err)
 	}
 }
