@@ -20,10 +20,9 @@ func NewExpenseHandler(expenseService service.ExpenseService) *ExpenseHandler {
 
 func (h *ExpenseHandler) RegisterRoutes(router *gin.RouterGroup) {
 	expenses := router.Group("/api/expenses")
-	expenses.Use(middleware.RequireRole("admin", "manager", "staff"))
 	{
-		expenses.GET("", h.GetExpenses)
-		expenses.POST("", h.CreateExpense)
+		expenses.GET("", middleware.RequirePermission("expenses.read"), h.GetExpenses)
+		expenses.POST("", middleware.RequirePermission("expenses.write"), h.CreateExpense)
 	}
 }
 

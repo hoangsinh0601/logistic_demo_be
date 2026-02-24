@@ -8,6 +8,7 @@ import (
 	"backend/internal/repository"
 	"backend/internal/service"
 	"backend/internal/websocket"
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -63,7 +64,9 @@ func main() {
 	corsConfig.AllowOrigins = origins
 	corsConfig.AllowCredentials = true
 	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization", "Accept"}
-	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
+	corsConfig.ExposeHeaders = []string{"Content-Length", "Content-Type"}
+	corsConfig.MaxAge = 12 * time.Hour
 	router.Use(cors.New(corsConfig))
 
 	// 4. Immediate Routes (Health & Swagger)
@@ -122,6 +125,15 @@ func main() {
 		statisticsService := service.NewStatisticsService(db)
 		taxService := service.NewTaxService(db)
 		expenseService := service.NewExpenseService(db, taxService)
+		roleService := service.NewRoleService(db)
+
+		// Seed default roles and permissions
+		if seedErr := roleService.SeedDefaultRolesAndPermissions(context.Background()); seedErr != nil {
+			log.Printf("WARNING: Failed to seed roles/permissions: %v", seedErr)
+		}
+
+		// Init permission middleware with DB for RequirePermission
+		middleware.InitPermissionMiddleware(db)
 
 		userHandler := handler.NewUserHandler(userService)
 		inventoryHandler := handler.NewInventoryHandler(inventoryService)
@@ -129,6 +141,7 @@ func main() {
 		statisticsHandler := handler.NewStatisticsHandler(statisticsService)
 		taxHandler := handler.NewTaxHandler(taxService)
 		expenseHandler := handler.NewExpenseHandler(expenseService)
+		roleHandler := handler.NewRoleHandler(roleService)
 
 		// Register API Routes
 		apiGroup := router.Group("")
@@ -138,6 +151,7 @@ func main() {
 		statisticsHandler.RegisterRoutes(apiGroup)
 		taxHandler.RegisterRoutes(apiGroup)
 		expenseHandler.RegisterRoutes(apiGroup)
+		roleHandler.RegisterRoutes(apiGroup)
 
 		// Create WebSocket endpoint
 		router.GET("/ws", func(c *gin.Context) {

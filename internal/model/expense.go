@@ -40,6 +40,10 @@ type Expense struct {
 	FCTAmountVND    decimal.Decimal `gorm:"type:decimal(18,4);default:0" json:"fct_amount_vnd"` // Tax amount in VND
 	TotalPayable    decimal.Decimal `gorm:"type:decimal(18,4);default:0" json:"total_payable"`  // Final amount in original currency
 
+	// VAT
+	VATRate      decimal.Decimal `gorm:"type:decimal(10,4);default:0" json:"vat_rate"`       // Rate fetched from tax_rules
+	VATAmountVND decimal.Decimal `gorm:"type:decimal(18,4);default:0" json:"vat_amount_vnd"` // VAT amount in VND
+
 	// Document & Deductibility (Rào chắn chi phí hợp lệ)
 	DocumentType        string  `gorm:"type:varchar(30);not null;default:'NONE'" json:"document_type"` // VAT_INVOICE, DIRECT_INVOICE, RETAIL_RECEIPT, NONE
 	VendorTaxCode       *string `gorm:"type:varchar(50)" json:"vendor_tax_code"`

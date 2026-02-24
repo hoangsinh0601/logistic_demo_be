@@ -44,6 +44,8 @@ type ExpenseResponse struct {
 	FCTRate             string  `json:"fct_rate"`
 	FCTAmountVND        string  `json:"fct_amount_vnd"`
 	TotalPayable        string  `json:"total_payable"`
+	VATRate             string  `json:"vat_rate"`
+	VATAmountVND        string  `json:"vat_amount_vnd"`
 	DocumentType        string  `json:"document_type"`
 	VendorTaxCode       *string `json:"vendor_tax_code"`
 	DocumentURL         string  `json:"document_url"`
@@ -120,6 +122,23 @@ func (s *expenseService) CreateExpense(ctx context.Context, req CreateExpenseReq
 		totalPayable = originalAmount.Add(fctInOriginal)
 	}
 
+	// ---- VAT Logic ----
+	vatRate := decimal.Zero
+	vatAmountVND := decimal.Zero
+
+	if req.DocumentType == model.DocTypeVATInvoice {
+		vatType := model.TaxTypeVATInland
+		if req.IsForeignVendor {
+			vatType = model.TaxTypeVATIntl
+		}
+		activeVAT, vatErr := s.taxService.CalculateActiveTax(ctx, vatType, time.Now())
+		if vatErr == nil {
+			vatRate = activeVAT
+			vatAmountVND = convertedAmountVND.Mul(vatRate)
+		}
+		// If no VAT rule found, proceed with 0 — not a hard error
+	}
+
 	// ---- Deductibility Logic ----
 	isDeductible := false
 	if req.DocumentType == model.DocTypeVATInvoice {
@@ -140,6 +159,8 @@ func (s *expenseService) CreateExpense(ctx context.Context, req CreateExpenseReq
 		FCTRate:             fctRate,
 		FCTAmountVND:        fctAmountVND,
 		TotalPayable:        totalPayable,
+		VATRate:             vatRate,
+		VATAmountVND:        vatAmountVND,
 		DocumentType:        req.DocumentType,
 		VendorTaxCode:       req.VendorTaxCode,
 		DocumentURL:         req.DocumentURL,
@@ -205,6 +226,8 @@ func toExpenseResponse(e model.Expense) ExpenseResponse {
 		FCTRate:             e.FCTRate.StringFixed(4),
 		FCTAmountVND:        e.FCTAmountVND.StringFixed(4),
 		TotalPayable:        e.TotalPayable.StringFixed(4),
+		VATRate:             e.VATRate.StringFixed(4),
+		VATAmountVND:        e.VATAmountVND.StringFixed(4),
 		DocumentType:        e.DocumentType,
 		VendorTaxCode:       e.VendorTaxCode,
 		DocumentURL:         e.DocumentURL,

@@ -26,7 +26,7 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 	router.POST("/refresh", h.RefreshToken)
 	router.POST("/logout", h.Logout)
 
-	// Me route (authenticated)
+	// Me route (authenticated — any valid token)
 	router.GET("/me", middleware.RequireRole("admin", "manager", "staff"), h.GetMe)
 
 	// Temp route for admin creation
@@ -34,14 +34,12 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 
 	// Protected users routes
 	users := router.Group("/users")
-	users.Use(middleware.RequireRole("admin", "manager"))
-
 	{
-		users.POST("", h.CreateUser)
-		users.GET("", h.ListUsers)
-		users.GET("/:id", h.GetUserByID)
-		users.PUT("/:id", h.UpdateUser)
-		users.DELETE("/:id", h.DeleteUser)
+		users.GET("", middleware.RequirePermission("users.read"), h.ListUsers)
+		users.GET("/:id", middleware.RequirePermission("users.read"), h.GetUserByID)
+		users.POST("", middleware.RequirePermission("users.write"), h.CreateUser)
+		users.PUT("/:id", middleware.RequirePermission("users.write"), h.UpdateUser)
+		users.DELETE("/:id", middleware.RequirePermission("users.delete"), h.DeleteUser)
 	}
 }
 
@@ -159,7 +157,20 @@ func (h *UserHandler) GetMe(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, response.Success(http.StatusOK, user))
+	// Fetch permissions for user's role
+	perms, _ := middleware.GetPermissionsForRoleFromDB(user.Role)
+	if perms == nil {
+		perms = []string{}
+	}
+
+	c.JSON(http.StatusOK, response.Success(http.StatusOK, map[string]interface{}{
+		"id":          user.ID,
+		"username":    user.Username,
+		"email":       user.Email,
+		"role":        user.Role,
+		"phone":       user.Phone,
+		"permissions": perms,
+	}))
 }
 
 // RefreshToken handles POST /refresh to issue new access and refresh tokens

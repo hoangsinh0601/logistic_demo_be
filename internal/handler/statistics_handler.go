@@ -19,11 +19,9 @@ func NewStatisticsHandler(statisticsService service.StatisticsService) *Statisti
 }
 
 func (h *StatisticsHandler) RegisterRoutes(router *gin.RouterGroup) {
-	// Protect statistics via JWT authentication, same as inventory routes
 	statsGroup := router.Group("/api/statistics")
-	statsGroup.Use(middleware.RequireRole("admin", "manager"))
 	{
-		statsGroup.GET("", h.GetStatistics)
+		statsGroup.GET("", middleware.RequirePermission("dashboard.read"), h.GetStatistics)
 	}
 }
 

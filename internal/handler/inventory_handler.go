@@ -20,13 +20,12 @@ func NewInventoryHandler(inventoryService service.InventoryService) *InventoryHa
 
 func (h *InventoryHandler) RegisterRoutes(router *gin.RouterGroup) {
 	inventory := router.Group("/api")
-	inventory.Use(middleware.RequireRole("admin", "manager", "staff")) // Protect all inventory routes
 	{
-		inventory.GET("/products", h.GetProducts)
-		inventory.POST("/products", h.CreateProduct)
-		inventory.PUT("/products/:id", h.UpdateProduct)
-		inventory.DELETE("/products/:id", h.DeleteProduct)
-		inventory.POST("/orders", h.CreateOrder)
+		inventory.GET("/products", middleware.RequirePermission("inventory.read"), h.GetProducts)
+		inventory.POST("/products", middleware.RequirePermission("inventory.write"), h.CreateProduct)
+		inventory.PUT("/products/:id", middleware.RequirePermission("inventory.write"), h.UpdateProduct)
+		inventory.DELETE("/products/:id", middleware.RequirePermission("inventory.write"), h.DeleteProduct)
+		inventory.POST("/orders", middleware.RequirePermission("inventory.write"), h.CreateOrder)
 	}
 }
 

@@ -12,6 +12,9 @@ const (
 	ActionDeleteProduct  = "DELETE_PRODUCT"
 	ActionCreateOrderIn  = "CREATE_ORDER_IMPORT"
 	ActionCreateOrderOut = "CREATE_ORDER_EXPORT"
+	ActionCreateTaxRule  = "CREATE_TAX_RULE"
+	ActionUpdateTaxRule  = "UPDATE_TAX_RULE"
+	ActionDeleteTaxRule  = "DELETE_TAX_RULE"
 )
 
 // AuditLog tracks Who, What, and When for critical system changes
