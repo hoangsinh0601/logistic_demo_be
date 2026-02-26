@@ -27,27 +27,31 @@ func (s *statisticsService) GetStatistics(ctx context.Context, startDate, endDat
 	response.TimeRangeStartDate = startDate
 	response.TimeRangeEndDate = endDate
 
-	// Calculate Total Import Value
+	// Calculate Total Import Value & Count
 	var totalImport struct {
 		Value float64
+		Count int
 	}
 	s.db.WithContext(ctx).Table("order_items").
-		Select("SUM(order_items.quantity * order_items.unit_price) as value").
+		Select("SUM(order_items.quantity * order_items.unit_price) as value, COUNT(DISTINCT orders.id) as count").
 		Joins("JOIN orders ON orders.id = order_items.order_id").
 		Where("orders.type = ? AND orders.status = ? AND orders.created_at >= ? AND orders.created_at <= ?", model.OrderTypeImport, "COMPLETED", startDate, endDate).
 		Scan(&totalImport)
 	response.TotalImportValue = totalImport.Value
+	response.TotalImportOrders = totalImport.Count
 
-	// Calculate Total Export Value
+	// Calculate Total Export Value & Count
 	var totalExport struct {
 		Value float64
+		Count int
 	}
 	s.db.WithContext(ctx).Table("order_items").
-		Select("SUM(order_items.quantity * order_items.unit_price) as value").
+		Select("SUM(order_items.quantity * order_items.unit_price) as value, COUNT(DISTINCT orders.id) as count").
 		Joins("JOIN orders ON orders.id = order_items.order_id").
 		Where("orders.type = ? AND orders.status = ? AND orders.created_at >= ? AND orders.created_at <= ?", model.OrderTypeExport, "COMPLETED", startDate, endDate).
 		Scan(&totalExport)
 	response.TotalExportValue = totalExport.Value
+	response.TotalExportOrders = totalExport.Count
 
 	// Profit = Export Value - Import Value
 	response.Profit = response.TotalExportValue - response.TotalImportValue

@@ -25,6 +25,13 @@ const (
 	OrderTypeExport = "EXPORT"
 )
 
+// OrderStatus constants
+const (
+	OrderStatusPendingApproval = "PENDING_APPROVAL"
+	OrderStatusCompleted       = "COMPLETED"
+	OrderStatusRejected        = "REJECTED"
+)
+
 // Order represents an inventory transaction request (Import/Export)
 type Order struct {
 	ID        uuid.UUID   `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`

@@ -9,9 +9,11 @@ import (
 
 // TaxType enum constants
 const (
-	TaxTypeVATInland = "VAT_INLAND"
-	TaxTypeVATIntl   = "VAT_INTL"
-	TaxTypeFCT       = "FCT"
+	TaxTypeVATInland  = "VAT_INLAND"
+	TaxTypeVATIntl    = "VAT_INTL"
+	TaxTypeFCT        = "FCT"
+	TaxTypeImport     = "IMPORT_TAX"
+	TaxTypeContractor = "CONTRACTOR_TAX"
 )
 
 // TaxRule stores tax rates with temporal validity

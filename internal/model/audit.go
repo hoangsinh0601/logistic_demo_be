@@ -15,6 +15,13 @@ const (
 	ActionCreateTaxRule  = "CREATE_TAX_RULE"
 	ActionUpdateTaxRule  = "UPDATE_TAX_RULE"
 	ActionDeleteTaxRule  = "DELETE_TAX_RULE"
+
+	// Approval workflow actions
+	ActionCreateApprovalRequest     = "CREATE_APPROVAL_REQUEST"
+	ActionApproveRequest            = "APPROVE_REQUEST"
+	ActionRejectRequest             = "REJECT_REQUEST"
+	ActionCreateInvoiceFromApproval = "CREATE_INVOICE_FROM_APPROVAL"
+	ActionCreateExpense             = "CREATE_EXPENSE"
 )
 
 // AuditLog tracks Who, What, and When for critical system changes

@@ -190,11 +190,6 @@ func RequirePermission(requiredPerms ...string) gin.HandlerFunc {
 		// Get user's permission codes (cached)
 		userPerms, err := getPermissionsForRole(userRole)
 		if err != nil {
-			// Fallback: if DB unavailable, allow admin/manager roles
-			if userRole == "admin" {
-				c.Next()
-				return
-			}
 			c.AbortWithStatusJSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, "Failed to verify permissions"))
 			return
 		}

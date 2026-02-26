@@ -126,6 +126,9 @@ func main() {
 		taxService := service.NewTaxService(db)
 		expenseService := service.NewExpenseService(db, taxService)
 		roleService := service.NewRoleService(db)
+		invoiceService := service.NewInvoiceService(db)
+		revenueService := service.NewRevenueService(db)
+		approvalService := service.NewApprovalService(db)
 
 		// Seed default roles and permissions
 		if seedErr := roleService.SeedDefaultRolesAndPermissions(context.Background()); seedErr != nil {
@@ -142,6 +145,8 @@ func main() {
 		taxHandler := handler.NewTaxHandler(taxService)
 		expenseHandler := handler.NewExpenseHandler(expenseService)
 		roleHandler := handler.NewRoleHandler(roleService)
+		invoiceHandler := handler.NewInvoiceHandler(invoiceService, revenueService)
+		approvalHandler := handler.NewApprovalHandler(approvalService)
 
 		// Register API Routes
 		apiGroup := router.Group("")
@@ -152,6 +157,8 @@ func main() {
 		taxHandler.RegisterRoutes(apiGroup)
 		expenseHandler.RegisterRoutes(apiGroup)
 		roleHandler.RegisterRoutes(apiGroup)
+		invoiceHandler.RegisterRoutes(apiGroup)
+		approvalHandler.RegisterRoutes(apiGroup)
 
 		// Create WebSocket endpoint
 		router.GET("/ws", func(c *gin.Context) {

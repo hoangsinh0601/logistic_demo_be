@@ -45,7 +45,10 @@ func (h *ExpenseHandler) CreateExpense(c *gin.Context) {
 		return
 	}
 
-	expense, err := h.expenseService.CreateExpense(c.Request.Context(), req)
+	userID, _ := c.Get("userID")
+	userIDStr, _ := userID.(string)
+
+	expense, err := h.expenseService.CreateExpense(c.Request.Context(), userIDStr, req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, err.Error()))
 		return

@@ -247,7 +247,7 @@ func (s *roleService) GetPermissionsByRoleName(ctx context.Context, roleName str
 func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error {
 	// Define all permissions
 	defaultPermissions := []model.Permission{
-		{Code: "dashboard.read", Name: "Xem Dashboard", Group: "dashboard"},
+		{Code: "dashboard.read", Name: "Xem Dashboard & Thống kê TC", Group: "dashboard"},
 		{Code: "inventory.read", Name: "Xem Kho hàng", Group: "inventory"},
 		{Code: "inventory.write", Name: "Quản lý Kho hàng", Group: "inventory"},
 		{Code: "expenses.read", Name: "Xem Chi phí", Group: "expenses"},
@@ -257,8 +257,16 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 		{Code: "users.read", Name: "Xem Người dùng", Group: "users"},
 		{Code: "users.write", Name: "Quản lý Người dùng", Group: "users"},
 		{Code: "users.delete", Name: "Xóa Người dùng", Group: "users"},
-		{Code: "audit.read", Name: "Xem Lịch sử", Group: "audit"},
+		{Code: "audit.read", Name: "Xem Lịch sử hoạt động", Group: "audit"},
 		{Code: "roles.manage", Name: "Quản lý Phân quyền", Group: "roles"},
+		// Invoice permissions
+		{Code: "invoices.read", Name: "Xem Hóa đơn", Group: "invoices"},
+		{Code: "invoices.write", Name: "Tạo Hóa đơn", Group: "invoices"},
+		// Approval permissions
+		{Code: "approvals.read", Name: "Xem Yêu cầu duyệt", Group: "approvals"},
+		{Code: "APPROVE_INVOICE", Name: "Duyệt / Từ chối yêu cầu", Group: "approvals"},
+		// Finance
+		{Code: "VIEW_FINANCE_REPORT", Name: "Xem Báo cáo Tài chính", Group: "finance"},
 	}
 
 	// Upsert permissions
@@ -273,6 +281,11 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 			}
 		} else {
 			p.ID = existing.ID // Use existing ID
+			// Update name/group if changed
+			s.db.WithContext(ctx).Exec(
+				`UPDATE permissions SET name = ?, "group" = ? WHERE id = ?`,
+				p.Name, p.Group, existing.ID,
+			)
 		}
 	}
 
@@ -300,25 +313,33 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 				"tax_rules.read", "tax_rules.write",
 				"users.read", "users.write", "users.delete",
 				"audit.read", "roles.manage",
+				"invoices.read", "invoices.write",
+				"approvals.read", "APPROVE_INVOICE",
+				"VIEW_FINANCE_REPORT",
 			},
 		},
 		"manager": {
-			Description: "Quản lý — Hầu hết quyền, trừ phân quyền và xóa user",
+			Description: "Quản lý — Duyệt yêu cầu, xem báo cáo, quản lý kho",
 			PermCodes: []string{
 				"dashboard.read", "inventory.read", "inventory.write",
 				"expenses.read", "expenses.write",
 				"tax_rules.read", "tax_rules.write",
 				"users.read", "users.write",
 				"audit.read",
+				"invoices.read", "invoices.write",
+				"approvals.read", "APPROVE_INVOICE",
+				"VIEW_FINANCE_REPORT",
 			},
 		},
 		"staff": {
-			Description: "Nhân viên — Xem và thao tác cơ bản",
+			Description: "Nhân viên — Tạo đơn, xem duyệt, thao tác cơ bản",
 			PermCodes: []string{
 				"inventory.read", "inventory.write",
 				"expenses.read", "expenses.write",
 				"tax_rules.read",
 				"audit.read",
+				"invoices.read",
+				"approvals.read",
 			},
 		},
 	}

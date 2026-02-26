@@ -8,6 +8,8 @@ import (
 type StatisticsResponse struct {
 	TotalImportValue   float64          `json:"total_import_value"`
 	TotalExportValue   float64          `json:"total_export_value"`
+	TotalImportOrders  int              `json:"total_import_orders"`
+	TotalExportOrders  int              `json:"total_export_orders"`
 	Profit             float64          `json:"profit"`
 	TopImportedItems   []ProductRanking `json:"top_imported_items"`
 	TopExportedItems   []ProductRanking `json:"top_exported_items"`

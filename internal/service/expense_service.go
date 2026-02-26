@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -57,7 +58,7 @@ type ExpenseResponse struct {
 // --- Interface ---
 
 type ExpenseService interface {
-	CreateExpense(ctx context.Context, req CreateExpenseRequest) (ExpenseResponse, error)
+	CreateExpense(ctx context.Context, userID string, req CreateExpenseRequest) (ExpenseResponse, error)
 	GetExpenses(ctx context.Context) ([]ExpenseResponse, error)
 }
 
@@ -72,7 +73,7 @@ func NewExpenseService(db *gorm.DB, taxService TaxService) ExpenseService {
 
 // --- Implementation ---
 
-func (s *expenseService) CreateExpense(ctx context.Context, req CreateExpenseRequest) (ExpenseResponse, error) {
+func (s *expenseService) CreateExpense(ctx context.Context, userID string, req CreateExpenseRequest) (ExpenseResponse, error) {
 	// Parse decimal fields
 	originalAmount, err := decimal.NewFromString(req.OriginalAmount)
 	if err != nil {
@@ -189,6 +190,75 @@ func (s *expenseService) CreateExpense(ctx context.Context, req CreateExpenseReq
 		if createErr := tx.Create(&expense).Error; createErr != nil {
 			return fmt.Errorf("failed to create expense: %w", createErr)
 		}
+
+		// Parse user UUID for audit/approval
+		var userUUID *uuid.UUID
+		if userID != "" {
+			parsed, parseErr := uuid.Parse(userID)
+			if parseErr == nil {
+				userUUID = &parsed
+			}
+		}
+
+		// Audit log for expense creation
+		expenseAuditDetails, _ := json.Marshal(map[string]interface{}{
+			"currency":          req.Currency,
+			"exchange_rate":     req.ExchangeRate,
+			"original_amount":   req.OriginalAmount,
+			"is_foreign_vendor": req.IsForeignVendor,
+			"document_type":     req.DocumentType,
+			"description":       req.Description,
+		})
+		expenseAudit := model.AuditLog{
+			UserID:     userUUID,
+			Action:     model.ActionCreateExpense,
+			EntityID:   expense.ID.String(),
+			EntityName: req.Description,
+			Details:    string(expenseAuditDetails),
+		}
+		if auditErr := tx.Create(&expenseAudit).Error; auditErr != nil {
+			return fmt.Errorf("failed to write expense audit log: %w", auditErr)
+		}
+
+		// Create ApprovalRequest for this expense
+		requestData, _ := json.Marshal(map[string]interface{}{
+			"currency":          req.Currency,
+			"exchange_rate":     req.ExchangeRate,
+			"original_amount":   req.OriginalAmount,
+			"is_foreign_vendor": req.IsForeignVendor,
+			"fct_type":          req.FCTType,
+			"document_type":     req.DocumentType,
+			"description":       req.Description,
+		})
+
+		approvalReq := model.ApprovalRequest{
+			RequestType: model.ApprovalReqTypeCreateExpense,
+			ReferenceID: expense.ID,
+			RequestData: string(requestData),
+			RequestedBy: userUUID,
+			Status:      model.ApprovalPending,
+		}
+		if createErr := tx.Create(&approvalReq).Error; createErr != nil {
+			return fmt.Errorf("failed to create approval request: %w", createErr)
+		}
+
+		// Audit log for approval request
+		auditDetails, _ := json.Marshal(map[string]interface{}{
+			"request_type": model.ApprovalReqTypeCreateExpense,
+			"reference_id": expense.ID.String(),
+			"description":  req.Description,
+		})
+		audit := model.AuditLog{
+			UserID:     userUUID,
+			Action:     model.ActionCreateApprovalRequest,
+			EntityID:   approvalReq.ID.String(),
+			EntityName: model.ApprovalReqTypeCreateExpense,
+			Details:    string(auditDetails),
+		}
+		if auditErr := tx.Create(&audit).Error; auditErr != nil {
+			return fmt.Errorf("failed to write audit log: %w", auditErr)
+		}
+
 		return nil
 	})
 

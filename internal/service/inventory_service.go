@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // DTOs
@@ -27,6 +26,8 @@ type CreateOrderRequest struct {
 	Type      string             `json:"type" binding:"required,oneof=IMPORT EXPORT"`
 	Note      string             `json:"note"`
 	Items     []OrderItemRequest `json:"items" binding:"required,min=1,dive"`
+	TaxRuleID string             `json:"tax_rule_id"` // Optional: user-selected tax rule for invoice
+	SideFees  string             `json:"side_fees"`   // Optional: additional fees
 }
 
 type CreateProductRequest struct {
@@ -227,14 +228,9 @@ func (s *inventoryService) DeleteProduct(ctx context.Context, userID string, id 
 	})
 }
 
-// CreateOrder processes an IMPORT or EXPORT transaction within a strict ACID Boundary
+// CreateOrder creates an order with PENDING_APPROVAL status and an ApprovalRequest.
+// Stock updates, inventory transactions, and invoice creation are deferred to the approval workflow.
 func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req CreateOrderRequest) error {
-	type wsUpdate struct {
-		ProductID string
-		NewStock  int
-	}
-	var updates []wsUpdate
-
 	// Start a Database Transaction
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1. Check if OrderCode already exists
@@ -245,18 +241,18 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			return err
 		}
 
-		// 2. Insert into `orders`
+		// 2. Insert into `orders` with PENDING_APPROVAL status
 		order := model.Order{
 			OrderCode: req.OrderCode,
 			Type:      req.Type,
 			Note:      req.Note,
-			Status:    "COMPLETED", // Assuming orders complete instantly for now
+			Status:    model.OrderStatusPendingApproval,
 		}
 		if err := tx.Create(&order).Error; err != nil {
 			return fmt.Errorf("failed to create order: %w", err)
 		}
 
-		// 3. Process each Order Item
+		// 3. Validate products and insert order items (NO stock update yet)
 		var productNames []string
 		type OrderItemAudit struct {
 			ProductID   string  `json:"product_id"`
@@ -269,23 +265,15 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 		for _, itemReq := range req.Items {
 			var product model.Product
 
-			// Lock the product row for UPDATE using `clause.Locking` to guarantee consistency under concurrency
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", itemReq.ProductID).First(&product).Error; err != nil {
+			// Validate product exists (no locking needed since we don't update stock)
+			if err := tx.Where("id = ?", itemReq.ProductID).First(&product).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return fmt.Errorf("product not found: %s", itemReq.ProductID)
 				}
-				return fmt.Errorf("failed to lock product %s: %w", itemReq.ProductID, err)
+				return fmt.Errorf("failed to find product %s: %w", itemReq.ProductID, err)
 			}
 
-			// Validate Export capacity
-			if req.Type == model.OrderTypeExport && product.CurrentStock < itemReq.Quantity {
-				return fmt.Errorf("insufficient stock for product %s (current: %d, requested: %d)", product.Name, product.CurrentStock, itemReq.Quantity)
-			}
-
-			// Add to product names array
 			productNames = append(productNames, product.Name)
-
-			// Store item details for audit logging
 			auditItems = append(auditItems, OrderItemAudit{
 				ProductID:   itemReq.ProductID,
 				ProductName: product.Name,
@@ -293,7 +281,7 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 				UnitPrice:   itemReq.UnitPrice,
 			})
 
-			// 4. Insert into `order_items`
+			// Insert order item
 			orderItem := model.OrderItem{
 				OrderID:   order.ID,
 				ProductID: product.ID,
@@ -303,46 +291,9 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			if err := tx.Create(&orderItem).Error; err != nil {
 				return fmt.Errorf("failed to create order item: %w", err)
 			}
-
-			// 5. Calculate new stock
-			modifier := 1
-			if req.Type == model.OrderTypeExport {
-				modifier = -1
-			}
-
-			quantityChanged := itemReq.Quantity * modifier
-			stockAfter := product.CurrentStock + quantityChanged
-
-			// 6. Update `current_stock` in `products` record
-			if err := tx.Model(&product).Update("current_stock", stockAfter).Error; err != nil {
-				return fmt.Errorf("failed to update stock for product %s: %w", product.Name, err)
-			}
-
-			// 7. Insert into `inventory_transactions`
-			txType := model.TxTypeIn
-			if req.Type == model.OrderTypeExport {
-				txType = model.TxTypeOut
-			}
-
-			invTx := model.InventoryTransaction{
-				ProductID:       product.ID,
-				OrderID:         &order.ID,
-				TransactionType: txType,
-				QuantityChanged: quantityChanged,
-				StockAfter:      stockAfter,
-			}
-			if err := tx.Create(&invTx).Error; err != nil {
-				return fmt.Errorf("failed to record inventory transaction: %w", err)
-			}
-
-			// Stage WS Broadcast payload
-			updates = append(updates, wsUpdate{
-				ProductID: product.ID.String(),
-				NewStock:  stockAfter,
-			})
 		}
 
-		// Insert Audit Log for Order Creating Hook
+		// 4. Insert Audit Log for Order
 		var uid *uuid.UUID
 		if parsed, err := uuid.Parse(userID); err == nil {
 			uid = &parsed
@@ -371,28 +322,46 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			return fmt.Errorf("failed to record audit transaction: %w", err)
 		}
 
-		// 8. Commit Transaction (Triggered automatically by returning nil in GORM's Transaction helper)
+		// 5. Create ApprovalRequest for this order
+		requestData, _ := json.Marshal(map[string]interface{}{
+			"order_code":  req.OrderCode,
+			"type":        req.Type,
+			"note":        req.Note,
+			"items":       auditItems,
+			"tax_rule_id": req.TaxRuleID,
+			"side_fees":   req.SideFees,
+		})
+
+		approvalReq := model.ApprovalRequest{
+			RequestType: model.ApprovalReqTypeCreateOrder,
+			ReferenceID: order.ID,
+			RequestData: string(requestData),
+			Status:      model.ApprovalPending,
+			RequestedBy: uid,
+		}
+		if err := tx.Create(&approvalReq).Error; err != nil {
+			return fmt.Errorf("failed to create approval request: %w", err)
+		}
+
+		// 6. Audit log for approval request creation
+		approvalDetails, _ := json.Marshal(map[string]interface{}{
+			"request_type": model.ApprovalReqTypeCreateOrder,
+			"reference_id": order.ID.String(),
+			"order_code":   req.OrderCode,
+		})
+		approvalAudit := model.AuditLog{
+			UserID:     uid,
+			Action:     model.ActionCreateApprovalRequest,
+			EntityID:   approvalReq.ID.String(),
+			EntityName: model.ApprovalReqTypeCreateOrder,
+			Details:    string(approvalDetails),
+		}
+		if err := tx.Create(&approvalAudit).Error; err != nil {
+			return fmt.Errorf("failed to record approval audit: %w", err)
+		}
+
 		return nil
 	})
-
-	// 9. After successful commit, Broadcast WebSocket Events
-	if err == nil && s.hub != nil {
-		for _, u := range updates {
-			msg := InventoryEvent{
-				Event: "INVENTORY_UPDATED",
-				Data: map[string]interface{}{
-					"product_id": u.ProductID,
-					"new_stock":  u.NewStock,
-				},
-			}
-			payload, _ := json.Marshal(msg)
-
-			// Send asynchronously
-			go func(data []byte) {
-				s.hub.Broadcast <- data
-			}(payload)
-		}
-	}
 
 	return err
 }
