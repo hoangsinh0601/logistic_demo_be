@@ -57,6 +57,7 @@ func main() {
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
 		"https://logistic-demo-fe.onrender.com",
+		"https://logistic-demo-fe-532n.vercel.app",
 	}
 	if feURL := os.Getenv("FRONTEND_URL"); feURL != "" {
 		origins = append(origins, feURL)
