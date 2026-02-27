@@ -57,7 +57,7 @@ type InventoryEvent struct {
 }
 
 type InventoryService interface {
-	GetProducts(ctx context.Context) ([]ProductResponse, error)
+	GetProducts(ctx context.Context, page, limit int) ([]ProductResponse, int64, error)
 	CreateProduct(ctx context.Context, userID string, req CreateProductRequest) (ProductResponse, error)
 	UpdateProduct(ctx context.Context, userID string, id string, req UpdateProductRequest) (ProductResponse, error)
 	DeleteProduct(ctx context.Context, userID string, id string) error
@@ -74,14 +74,27 @@ func NewInventoryService(db *gorm.DB, hub *ws.Hub) InventoryService {
 	return &inventoryService{db: db, hub: hub}
 }
 
-// GetProducts limits results to current stock lookup
-func (s *inventoryService) GetProducts(ctx context.Context) ([]ProductResponse, error) {
-	var products []model.Product
-	if err := s.db.WithContext(ctx).Find(&products).Error; err != nil {
-		return nil, err
+// GetProducts returns paginated products with current stock
+func (s *inventoryService) GetProducts(ctx context.Context, page, limit int) ([]ProductResponse, int64, error) {
+	var total int64
+	if err := s.db.WithContext(ctx).Model(&model.Product{}).Count(&total).Error; err != nil {
+		return nil, 0, err
 	}
 
-	var res []ProductResponse
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	var products []model.Product
+	if err := s.db.WithContext(ctx).Order("created_at DESC").Offset(offset).Limit(limit).Find(&products).Error; err != nil {
+		return nil, 0, err
+	}
+
+	res := make([]ProductResponse, 0, len(products))
 	for _, p := range products {
 		res = append(res, ProductResponse{
 			ID:           p.ID.String(),
@@ -92,7 +105,7 @@ func (s *inventoryService) GetProducts(ctx context.Context) ([]ProductResponse, 
 		})
 	}
 
-	return res, nil
+	return res, total, nil
 }
 
 // CreateProduct creates a new product in the system and logs the action

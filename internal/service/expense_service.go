@@ -39,14 +39,14 @@ type ExpenseResponse struct {
 	Currency            string  `json:"currency"`
 	ExchangeRate        string  `json:"exchange_rate"`
 	OriginalAmount      string  `json:"original_amount"`
-	ConvertedAmountVND  string  `json:"converted_amount_vnd"`
+	ConvertedAmountUSD  string  `json:"converted_amount_usd"`
 	IsForeignVendor     bool    `json:"is_foreign_vendor"`
 	FCTType             string  `json:"fct_type"`
 	FCTRate             string  `json:"fct_rate"`
-	FCTAmountVND        string  `json:"fct_amount_vnd"`
+	FCTAmount           string  `json:"fct_amount"`
 	TotalPayable        string  `json:"total_payable"`
 	VATRate             string  `json:"vat_rate"`
-	VATAmountVND        string  `json:"vat_amount_vnd"`
+	VATAmount           string  `json:"vat_amount"`
 	DocumentType        string  `json:"document_type"`
 	VendorTaxCode       *string `json:"vendor_tax_code"`
 	DocumentURL         string  `json:"document_url"`
@@ -59,7 +59,7 @@ type ExpenseResponse struct {
 
 type ExpenseService interface {
 	CreateExpense(ctx context.Context, userID string, req CreateExpenseRequest) (ExpenseResponse, error)
-	GetExpenses(ctx context.Context) ([]ExpenseResponse, error)
+	GetExpenses(ctx context.Context, page, limit int) ([]ExpenseResponse, int64, error)
 }
 
 type expenseService struct {
@@ -90,11 +90,11 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 	}
 
 	// ---- Currency Conversion ----
-	convertedAmountVND := originalAmount.Mul(exchangeRate)
+	convertedAmountUSD := originalAmount.Mul(exchangeRate)
 
 	// ---- FCT Logic ----
 	fctRate := decimal.Zero
-	fctAmountVND := decimal.Zero
+	fctAmount := decimal.Zero
 	totalPayable := originalAmount
 
 	if req.IsForeignVendor {
@@ -111,21 +111,21 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 
 		switch req.FCTType {
 		case model.FCTTypeNet:
-			// NET: fct_amount = converted_vnd * fct_rate
-			fctAmountVND = convertedAmountVND.Mul(fctRate)
+			// NET: fct_amount = converted_usd * fct_rate
+			fctAmount = convertedAmountUSD.Mul(fctRate)
 		case model.FCTTypeGross:
-			// GROSS: fct_amount = converted_vnd * fct_rate / (1 + fct_rate)
-			fctAmountVND = convertedAmountVND.Mul(fctRate).Div(decimal.NewFromInt(1).Add(fctRate))
+			// GROSS: fct_amount = converted_usd * fct_rate / (1 + fct_rate)
+			fctAmount = convertedAmountUSD.Mul(fctRate).Div(decimal.NewFromInt(1).Add(fctRate))
 		}
 
 		// Total payable = original_amount + FCT in original currency
-		fctInOriginal := fctAmountVND.Div(exchangeRate)
+		fctInOriginal := fctAmount.Div(exchangeRate)
 		totalPayable = originalAmount.Add(fctInOriginal)
 	}
 
 	// ---- VAT Logic ----
 	vatRate := decimal.Zero
-	vatAmountVND := decimal.Zero
+	vatAmount := decimal.Zero
 
 	if req.DocumentType == model.DocTypeVATInvoice {
 		vatType := model.TaxTypeVATInland
@@ -135,7 +135,7 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 		activeVAT, vatErr := s.taxService.CalculateActiveTax(ctx, vatType, time.Now())
 		if vatErr == nil {
 			vatRate = activeVAT
-			vatAmountVND = convertedAmountVND.Mul(vatRate)
+			vatAmount = convertedAmountUSD.Mul(vatRate)
 		}
 		// If no VAT rule found, proceed with 0 — not a hard error
 	}
@@ -154,14 +154,14 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 		Currency:            req.Currency,
 		ExchangeRate:        exchangeRate,
 		OriginalAmount:      originalAmount,
-		ConvertedAmountVND:  convertedAmountVND,
+		ConvertedAmountUSD:  convertedAmountUSD,
 		IsForeignVendor:     req.IsForeignVendor,
 		FCTType:             req.FCTType,
 		FCTRate:             fctRate,
-		FCTAmountVND:        fctAmountVND,
+		FCTAmount:           fctAmount,
 		TotalPayable:        totalPayable,
 		VATRate:             vatRate,
-		VATAmountVND:        vatAmountVND,
+		VATAmount:           vatAmount,
 		DocumentType:        req.DocumentType,
 		VendorTaxCode:       req.VendorTaxCode,
 		DocumentURL:         req.DocumentURL,
@@ -269,17 +269,30 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 	return toExpenseResponse(expense), nil
 }
 
-func (s *expenseService) GetExpenses(ctx context.Context) ([]ExpenseResponse, error) {
+func (s *expenseService) GetExpenses(ctx context.Context, page, limit int) ([]ExpenseResponse, int64, error) {
+	var total int64
+	if err := s.db.WithContext(ctx).Model(&model.Expense{}).Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to count expenses: %w", err)
+	}
+
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
 	var expenses []model.Expense
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Find(&expenses).Error; err != nil {
-		return nil, fmt.Errorf("failed to fetch expenses: %w", err)
+	if err := s.db.WithContext(ctx).Order("created_at DESC").Offset(offset).Limit(limit).Find(&expenses).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to fetch expenses: %w", err)
 	}
 
 	result := make([]ExpenseResponse, 0, len(expenses))
 	for _, e := range expenses {
 		result = append(result, toExpenseResponse(e))
 	}
-	return result, nil
+	return result, total, nil
 }
 
 // --- Helpers ---
@@ -290,14 +303,14 @@ func toExpenseResponse(e model.Expense) ExpenseResponse {
 		Currency:            e.Currency,
 		ExchangeRate:        e.ExchangeRate.StringFixed(6),
 		OriginalAmount:      e.OriginalAmount.StringFixed(4),
-		ConvertedAmountVND:  e.ConvertedAmountVND.StringFixed(4),
+		ConvertedAmountUSD:  e.ConvertedAmountUSD.StringFixed(4),
 		IsForeignVendor:     e.IsForeignVendor,
 		FCTType:             e.FCTType,
 		FCTRate:             e.FCTRate.StringFixed(4),
-		FCTAmountVND:        e.FCTAmountVND.StringFixed(4),
+		FCTAmount:           e.FCTAmount.StringFixed(4),
 		TotalPayable:        e.TotalPayable.StringFixed(4),
 		VATRate:             e.VATRate.StringFixed(4),
-		VATAmountVND:        e.VATAmountVND.StringFixed(4),
+		VATAmount:           e.VATAmount.StringFixed(4),
 		DocumentType:        e.DocumentType,
 		VendorTaxCode:       e.VendorTaxCode,
 		DocumentURL:         e.DocumentURL,

@@ -17,7 +17,10 @@ import (
 func GetJWTSecret() []byte {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "default_super_secret_key" // In production, make sure to set JWT_SECRET
+		if os.Getenv("GIN_MODE") == "release" {
+			panic("FATAL: JWT_SECRET environment variable is required in production mode")
+		}
+		secret = "default_super_secret_key" // Development fallback only — DO NOT use in production
 	}
 	return []byte(secret)
 }

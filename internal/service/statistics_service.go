@@ -6,6 +6,7 @@ import (
 
 	"backend/internal/model"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -29,32 +30,36 @@ func (s *statisticsService) GetStatistics(ctx context.Context, startDate, endDat
 
 	// Calculate Total Import Value & Count
 	var totalImport struct {
-		Value float64
+		Value string
 		Count int
 	}
 	s.db.WithContext(ctx).Table("order_items").
-		Select("SUM(order_items.quantity * order_items.unit_price) as value, COUNT(DISTINCT orders.id) as count").
+		Select("COALESCE(CAST(SUM(order_items.quantity * order_items.unit_price) AS TEXT), '0') as value, COUNT(DISTINCT orders.id) as count").
 		Joins("JOIN orders ON orders.id = order_items.order_id").
 		Where("orders.type = ? AND orders.status = ? AND orders.created_at >= ? AND orders.created_at <= ?", model.OrderTypeImport, "COMPLETED", startDate, endDate).
 		Scan(&totalImport)
-	response.TotalImportValue = totalImport.Value
+
+	importVal, _ := decimal.NewFromString(totalImport.Value)
+	response.TotalImportValue = importVal
 	response.TotalImportOrders = totalImport.Count
 
 	// Calculate Total Export Value & Count
 	var totalExport struct {
-		Value float64
+		Value string
 		Count int
 	}
 	s.db.WithContext(ctx).Table("order_items").
-		Select("SUM(order_items.quantity * order_items.unit_price) as value, COUNT(DISTINCT orders.id) as count").
+		Select("COALESCE(CAST(SUM(order_items.quantity * order_items.unit_price) AS TEXT), '0') as value, COUNT(DISTINCT orders.id) as count").
 		Joins("JOIN orders ON orders.id = order_items.order_id").
 		Where("orders.type = ? AND orders.status = ? AND orders.created_at >= ? AND orders.created_at <= ?", model.OrderTypeExport, "COMPLETED", startDate, endDate).
 		Scan(&totalExport)
-	response.TotalExportValue = totalExport.Value
+
+	exportVal, _ := decimal.NewFromString(totalExport.Value)
+	response.TotalExportValue = exportVal
 	response.TotalExportOrders = totalExport.Count
 
 	// Profit = Export Value - Import Value
-	response.Profit = response.TotalExportValue - response.TotalImportValue
+	response.Profit = exportVal.Sub(importVal)
 
 	// Calculate Top Imported Items
 	var topImports []model.ProductRanking

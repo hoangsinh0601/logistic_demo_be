@@ -11,10 +11,11 @@ RUN go build -o main ./cmd/api/main.go
 
 FROM alpine:latest
 
+RUN apk --no-cache add ca-certificates
+
 WORKDIR /app
 
 COPY --from=builder /app/main .
-COPY --from=builder /app/configs/.env configs/.env
 
 EXPOSE 8080
 

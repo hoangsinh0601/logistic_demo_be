@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // --- DTOs ---
@@ -25,6 +26,8 @@ type CreateInvoiceRequest struct {
 
 type InvoiceFilter struct {
 	ApprovalStatus string // PENDING, APPROVED, REJECTED or empty for all
+	Page           int
+	Limit          int
 }
 
 type InvoiceResponse struct {
@@ -50,7 +53,7 @@ type InvoiceResponse struct {
 
 type InvoiceService interface {
 	CreateInvoice(ctx context.Context, req CreateInvoiceRequest) (InvoiceResponse, error)
-	ListInvoices(ctx context.Context, filter InvoiceFilter) ([]InvoiceResponse, error)
+	ListInvoices(ctx context.Context, filter InvoiceFilter) ([]InvoiceResponse, int64, error)
 	ApproveInvoice(ctx context.Context, id string, userID string) (InvoiceResponse, error)
 	RejectInvoice(ctx context.Context, id string, userID string) (InvoiceResponse, error)
 }
@@ -152,22 +155,39 @@ func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceReq
 	return toInvoiceResponse(invoice), nil
 }
 
-func (s *invoiceService) ListInvoices(ctx context.Context, filter InvoiceFilter) ([]InvoiceResponse, error) {
-	query := s.db.WithContext(ctx).Preload("TaxRule").Order("created_at DESC")
+func (s *invoiceService) ListInvoices(ctx context.Context, filter InvoiceFilter) ([]InvoiceResponse, int64, error) {
+	var total int64
+	countQuery := s.db.WithContext(ctx).Model(&model.Invoice{})
+	if filter.ApprovalStatus != "" {
+		countQuery = countQuery.Where("approval_status = ?", filter.ApprovalStatus)
+	}
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to count invoices: %w", err)
+	}
+
+	if filter.Page <= 0 {
+		filter.Page = 1
+	}
+	if filter.Limit <= 0 {
+		filter.Limit = 20
+	}
+	offset := (filter.Page - 1) * filter.Limit
+
+	query := s.db.WithContext(ctx).Preload("TaxRule").Order("created_at DESC").Offset(offset).Limit(filter.Limit)
 	if filter.ApprovalStatus != "" {
 		query = query.Where("approval_status = ?", filter.ApprovalStatus)
 	}
 
 	var invoices []model.Invoice
 	if err := query.Find(&invoices).Error; err != nil {
-		return nil, fmt.Errorf("failed to fetch invoices: %w", err)
+		return nil, 0, fmt.Errorf("failed to fetch invoices: %w", err)
 	}
 
 	result := make([]InvoiceResponse, 0, len(invoices))
 	for _, inv := range invoices {
 		result = append(result, toInvoiceResponse(inv))
 	}
-	return result, nil
+	return result, total, nil
 }
 
 func (s *invoiceService) ApproveInvoice(ctx context.Context, id string, userID string) (InvoiceResponse, error) {
@@ -190,24 +210,33 @@ func (s *invoiceService) updateApproval(ctx context.Context, id string, userID s
 	}
 
 	var invoice model.Invoice
-	if err := s.db.WithContext(ctx).First(&invoice, "id = ?", invoiceID).Error; err != nil {
-		return InvoiceResponse{}, fmt.Errorf("invoice not found: %w", err)
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Lock the row to prevent concurrent approval
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&invoice, "id = ?", invoiceID).Error; err != nil {
+			return fmt.Errorf("invoice not found: %w", err)
+		}
+
+		if invoice.ApprovalStatus != model.ApprovalPending {
+			return fmt.Errorf("invoice is already %s", invoice.ApprovalStatus)
+		}
+
+		now := time.Now()
+		invoice.ApprovalStatus = status
+		invoice.ApprovedBy = &approverID
+		invoice.ApprovedAt = &now
+
+		if err := tx.Save(&invoice).Error; err != nil {
+			return fmt.Errorf("failed to update invoice: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return InvoiceResponse{}, err
 	}
 
-	if invoice.ApprovalStatus != model.ApprovalPending {
-		return InvoiceResponse{}, fmt.Errorf("invoice is already %s", invoice.ApprovalStatus)
-	}
-
-	now := time.Now()
-	invoice.ApprovalStatus = status
-	invoice.ApprovedBy = &approverID
-	invoice.ApprovedAt = &now
-
-	if err := s.db.WithContext(ctx).Save(&invoice).Error; err != nil {
-		return InvoiceResponse{}, fmt.Errorf("failed to update invoice: %w", err)
-	}
-
-	// Reload with relations
+	// Reload with relations outside transaction
 	if err := s.db.WithContext(ctx).Preload("TaxRule").First(&invoice, "id = ?", invoice.ID).Error; err != nil {
 		return InvoiceResponse{}, fmt.Errorf("failed to reload invoice: %w", err)
 	}
@@ -219,10 +248,20 @@ func (s *invoiceService) generateInvoiceNo(ctx context.Context) (string, error) 
 	today := time.Now().Format("20060102")
 	prefix := "INV-" + today + "-"
 
+	// Use advisory lock to prevent concurrent duplicate invoice numbers
 	var count int64
-	if err := s.db.WithContext(ctx).Model(&model.Invoice{}).
-		Where("invoice_no LIKE ?", prefix+"%").
-		Count(&count).Error; err != nil {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Acquire advisory lock based on hash of today's date
+		tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", prefix)
+
+		if err := tx.Model(&model.Invoice{}).
+			Where("invoice_no LIKE ?", prefix+"%").
+			Count(&count).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return "", err
 	}
 

@@ -21,28 +21,28 @@ const (
 	FCTTypeGross = "GROSS"
 )
 
-// Expense represents a payment/cost entry with multi-currency and tax compliance fields
+// Expense represents a payment/cost entry with multi-currency support (base: USD)
 type Expense struct {
 	ID       uuid.UUID  `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
 	OrderID  *uuid.UUID `gorm:"type:uuid;index" json:"order_id"`
 	VendorID *uuid.UUID `gorm:"type:uuid;index" json:"vendor_id"`
 
 	// Currency & Exchange Rate
-	Currency           string          `gorm:"type:varchar(10);not null;default:'VND'" json:"currency"`
-	ExchangeRate       decimal.Decimal `gorm:"type:decimal(18,6);not null;default:1" json:"exchange_rate"` // 1 if VND
-	OriginalAmount     decimal.Decimal `gorm:"type:decimal(18,4);not null" json:"original_amount"`         // Amount in original currency
-	ConvertedAmountVND decimal.Decimal `gorm:"type:decimal(18,4);not null" json:"converted_amount_vnd"`    // = original_amount * exchange_rate
+	Currency           string          `gorm:"type:varchar(10);not null;default:'USD'" json:"currency"`
+	ExchangeRate       decimal.Decimal `gorm:"type:decimal(18,6);not null;default:1" json:"exchange_rate"`                          // 1 if USD
+	OriginalAmount     decimal.Decimal `gorm:"type:decimal(18,4);not null" json:"original_amount"`                                  // Amount in original currency
+	ConvertedAmountUSD decimal.Decimal `gorm:"column:converted_amount_usd;type:decimal(18,4);not null" json:"converted_amount_usd"` // = original_amount * exchange_rate
 
 	// FCT (Foreign Contractor Tax)
 	IsForeignVendor bool            `gorm:"default:false" json:"is_foreign_vendor"`
-	FCTType         string          `gorm:"type:varchar(10)" json:"fct_type"`                   // NET or GROSS
-	FCTRate         decimal.Decimal `gorm:"type:decimal(10,4);default:0" json:"fct_rate"`       // Rate fetched from tax_rules
-	FCTAmountVND    decimal.Decimal `gorm:"type:decimal(18,4);default:0" json:"fct_amount_vnd"` // Tax amount in VND
-	TotalPayable    decimal.Decimal `gorm:"type:decimal(18,4);default:0" json:"total_payable"`  // Final amount in original currency
+	FCTType         string          `gorm:"type:varchar(10)" json:"fct_type"`                                 // NET or GROSS
+	FCTRate         decimal.Decimal `gorm:"type:decimal(10,4);default:0" json:"fct_rate"`                     // Rate fetched from tax_rules
+	FCTAmount       decimal.Decimal `gorm:"column:fct_amount;type:decimal(18,4);default:0" json:"fct_amount"` // Tax amount in USD
+	TotalPayable    decimal.Decimal `gorm:"type:decimal(18,4);default:0" json:"total_payable"`                // Final amount in original currency
 
 	// VAT
-	VATRate      decimal.Decimal `gorm:"type:decimal(10,4);default:0" json:"vat_rate"`       // Rate fetched from tax_rules
-	VATAmountVND decimal.Decimal `gorm:"type:decimal(18,4);default:0" json:"vat_amount_vnd"` // VAT amount in VND
+	VATRate   decimal.Decimal `gorm:"type:decimal(10,4);default:0" json:"vat_rate"`                     // Rate fetched from tax_rules
+	VATAmount decimal.Decimal `gorm:"column:vat_amount;type:decimal(18,4);default:0" json:"vat_amount"` // VAT amount in USD
 
 	// Document & Deductibility (Rào chắn chi phí hợp lệ)
 	DocumentType        string  `gorm:"type:varchar(30);not null;default:'NONE'" json:"document_type"` // VAT_INVOICE, DIRECT_INVOICE, RETAIL_RECEIPT, NONE

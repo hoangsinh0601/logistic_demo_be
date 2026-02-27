@@ -29,9 +29,6 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 	// Me route (authenticated — any valid token)
 	router.GET("/me", middleware.RequireRole("admin", "manager", "staff"), h.GetMe)
 
-	// Temp route for admin creation
-	router.POST("/temp-admin", h.CreateTempAdmin)
-
 	// Protected users routes
 	users := router.Group("/users")
 	{
@@ -41,34 +38,6 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 		users.PUT("/:id", middleware.RequirePermission("users.write"), h.UpdateUser)
 		users.DELETE("/:id", middleware.RequirePermission("users.delete"), h.DeleteUser)
 	}
-}
-
-// CreateTempAdmin creates a temporary admin mapping
-// @Summary      Create temporary admin
-// @Description  Creates an admin user without requiring authentication. FOR DEVELOPMENT ONLY.
-// @Tags         users
-// @Accept       json
-// @Produce      json
-// @Param        payload  body      service.CreateUserRequest  true  "Create Admin Payload"
-// @Success      201      {object}  response.Response{data=service.UserResponse}
-// @Failure      400      {object}  response.Response
-// @Failure      500      {object}  response.Response
-// @Router       /temp-admin [post]
-func (h *UserHandler) CreateTempAdmin(c *gin.Context) {
-	var req service.CreateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, "Invalid request payload: "+err.Error()))
-		return
-	}
-
-	req.Role = "admin" // Force admin role
-	user, err := h.userService.CreateUser(c.Request.Context(), req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, err.Error()))
-		return
-	}
-
-	c.JSON(http.StatusCreated, response.Success(http.StatusCreated, user))
 }
 
 // CreateUser handles POST /users requests mapping
@@ -211,6 +180,12 @@ func (h *UserHandler) RefreshToken(c *gin.Context) {
 }
 
 // Logout handles POST /logout to clear auth cookies
+// @Summary      Logout user
+// @Description  Clears authentication cookies and logs out the user
+// @Tags         auth
+// @Produce      json
+// @Success      200  {object}  response.Response
+// @Router       /logout [post]
 func (h *UserHandler) Logout(c *gin.Context) {
 	middleware.ClearTokenCookies(c)
 	c.JSON(http.StatusOK, response.Success(http.StatusOK, "Logged out"))

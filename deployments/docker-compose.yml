@@ -35,6 +35,8 @@ services:
       - DB_NAME=postgres
       - DB_SSLMODE=disable
       - PORT=8080
+      - JWT_SECRET=default_super_secret_key
+      - CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://logistic-demo-fe.onrender.com,https://logistic-demo-fe-532n.vercel.app
     depends_on:
       db:
         condition: service_healthy

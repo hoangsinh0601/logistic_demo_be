@@ -481,8 +481,8 @@ func (s *approvalService) executeExpenseApproval(ctx context.Context, tx *gorm.D
 		return fmt.Errorf("failed to generate invoice number: %w", err)
 	}
 
-	subtotal := expense.ConvertedAmountVND
-	taxAmount := expense.VATAmountVND.Add(expense.FCTAmountVND)
+	subtotal := expense.ConvertedAmountUSD
+	taxAmount := expense.VATAmount.Add(expense.FCTAmount)
 	totalAmount := subtotal.Add(taxAmount)
 
 	invoice := model.Invoice{
@@ -526,6 +526,9 @@ func (s *approvalService) executeExpenseApproval(ctx context.Context, tx *gorm.D
 func (s *approvalService) generateInvoiceNo(tx *gorm.DB) (string, error) {
 	today := time.Now().Format("20060102")
 	prefix := "INV-" + today + "-"
+
+	// Use advisory lock to prevent concurrent duplicate invoice numbers
+	tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", prefix)
 
 	var count int64
 	if err := tx.Model(&model.Invoice{}).

@@ -30,6 +30,14 @@ func (h *TaxHandler) RegisterRoutes(router *gin.RouterGroup) {
 }
 
 // GetTaxRules returns all tax rules ordered by effective_from DESC
+// @Summary      List tax rules
+// @Description  Retrieves all tax rules ordered by effective_from descending
+// @Tags         tax-rules
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  response.Response{data=[]service.TaxRuleResponse}
+// @Failure      500  {object}  response.Response
+// @Router       /api/tax-rules [get]
 func (h *TaxHandler) GetTaxRules(c *gin.Context) {
 	rules, err := h.taxService.GetTaxRules(c.Request.Context())
 	if err != nil {
@@ -41,6 +49,17 @@ func (h *TaxHandler) GetTaxRules(c *gin.Context) {
 }
 
 // GetActiveTaxRate returns the currently active tax rate for a given type
+// @Summary      Get active tax rate
+// @Description  Returns the currently active tax rate for a given type (VAT_INLAND, VAT_INTL, FCT)
+// @Tags         tax-rules
+// @Security     BearerAuth
+// @Produce      json
+// @Param        type  query     string  true  "Tax type: VAT_INLAND, VAT_INTL, FCT"
+// @Success      200   {object}  response.Response{data=service.TaxRuleResponse}
+// @Failure      400   {object}  response.Response
+// @Failure      404   {object}  response.Response
+// @Failure      500   {object}  response.Response
+// @Router       /api/tax-rules/active [get]
 func (h *TaxHandler) GetActiveTaxRate(c *gin.Context) {
 	taxType := c.Query("type")
 	if taxType == "" {
@@ -63,6 +82,16 @@ func (h *TaxHandler) GetActiveTaxRate(c *gin.Context) {
 }
 
 // CreateTaxRule creates a new tax rule entry
+// @Summary      Create tax rule
+// @Description  Creates a new tax rule with type, rate, and effective date
+// @Tags         tax-rules
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        payload  body      service.CreateTaxRuleRequest  true  "Create Tax Rule Payload"
+// @Success      201      {object}  response.Response{data=service.TaxRuleResponse}
+// @Failure      400      {object}  response.Response
+// @Router       /api/tax-rules [post]
 func (h *TaxHandler) CreateTaxRule(c *gin.Context) {
 	var req service.CreateTaxRuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -83,6 +112,17 @@ func (h *TaxHandler) CreateTaxRule(c *gin.Context) {
 }
 
 // UpdateTaxRule updates an existing tax rule
+// @Summary      Update tax rule
+// @Description  Updates an existing tax rule by ID
+// @Tags         tax-rules
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id       path      string                        true  "Tax Rule ID"
+// @Param        payload  body      service.UpdateTaxRuleRequest  true  "Update Tax Rule Payload"
+// @Success      200      {object}  response.Response{data=service.TaxRuleResponse}
+// @Failure      400      {object}  response.Response
+// @Router       /api/tax-rules/{id} [put]
 func (h *TaxHandler) UpdateTaxRule(c *gin.Context) {
 	id := c.Param("id")
 
@@ -105,6 +145,15 @@ func (h *TaxHandler) UpdateTaxRule(c *gin.Context) {
 }
 
 // DeleteTaxRule deletes a tax rule
+// @Summary      Delete tax rule
+// @Description  Deletes a tax rule by ID
+// @Tags         tax-rules
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id   path      string  true  "Tax Rule ID"
+// @Success      200  {object}  response.Response
+// @Failure      400  {object}  response.Response
+// @Router       /api/tax-rules/{id} [delete]
 func (h *TaxHandler) DeleteTaxRule(c *gin.Context) {
 	id := c.Param("id")
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"backend/internal/middleware"
 	"backend/internal/service"
@@ -29,26 +30,47 @@ func (h *InventoryHandler) RegisterRoutes(router *gin.RouterGroup) {
 	}
 }
 
-// GetProducts handles retrieving inventory statuses
+// GetProducts handles retrieving paginated inventory statuses
 // @Summary      Get products
-// @Description  Retrieves list of products with current stock
+// @Description  Retrieves a paginated list of products with current stock
 // @Tags         inventory
 // @Security     BearerAuth
 // @Produce      json
-// @Success      200    {object}  response.Response{data=[]service.ProductResponse}
+// @Param        page   query     int  false  "Page number (default 1)"
+// @Param        limit  query     int  false  "Number of items per page (default 20)"
+// @Success      200    {object}  response.Response{data=object}
 // @Failure      500    {object}  response.Response
 // @Router       /api/products [get]
 func (h *InventoryHandler) GetProducts(c *gin.Context) {
-	products, err := h.inventoryService.GetProducts(c.Request.Context())
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	products, total, err := h.inventoryService.GetProducts(c.Request.Context(), page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, "Failed to retrieve products: "+err.Error()))
 		return
 	}
 
-	c.JSON(http.StatusOK, response.Success(http.StatusOK, products))
+	c.JSON(http.StatusOK, response.Success(http.StatusOK, map[string]interface{}{
+		"products": products,
+		"total":    total,
+		"page":     page,
+		"limit":    limit,
+	}))
 }
 
 // CreateProduct creates a new inventory product entry
+// @Summary      Create product
+// @Description  Creates a new product entry in the inventory system
+// @Tags         inventory
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        payload  body      service.CreateProductRequest  true  "Create Product Payload"
+// @Success      201      {object}  response.Response{data=service.ProductResponse}
+// @Failure      400      {object}  response.Response
+// @Failure      500      {object}  response.Response
+// @Router       /api/products [post]
 func (h *InventoryHandler) CreateProduct(c *gin.Context) {
 	var req service.CreateProductRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -68,6 +90,18 @@ func (h *InventoryHandler) CreateProduct(c *gin.Context) {
 }
 
 // UpdateProduct updates an existing product's metadata
+// @Summary      Update product
+// @Description  Updates an existing product's details by ID
+// @Tags         inventory
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id       path      string                        true  "Product ID"
+// @Param        payload  body      service.UpdateProductRequest  true  "Update Product Payload"
+// @Success      200      {object}  response.Response{data=service.ProductResponse}
+// @Failure      400      {object}  response.Response
+// @Failure      500      {object}  response.Response
+// @Router       /api/products/{id} [put]
 func (h *InventoryHandler) UpdateProduct(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -93,6 +127,16 @@ func (h *InventoryHandler) UpdateProduct(c *gin.Context) {
 }
 
 // DeleteProduct removes a product entry softly
+// @Summary      Delete product
+// @Description  Soft deletes a product by ID
+// @Tags         inventory
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id   path      string  true  "Product ID"
+// @Success      200  {object}  response.Response
+// @Failure      400  {object}  response.Response
+// @Failure      500  {object}  response.Response
+// @Router       /api/products/{id} [delete]
 func (h *InventoryHandler) DeleteProduct(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
