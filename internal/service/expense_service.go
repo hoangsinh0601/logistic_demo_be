@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"backend/internal/model"
+	"backend/internal/repository"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
 )
 
 // --- DTOs ---
@@ -63,12 +63,27 @@ type ExpenseService interface {
 }
 
 type expenseService struct {
-	db         *gorm.DB
-	taxService TaxService
+	expenseRepo  repository.ExpenseRepository
+	auditRepo    repository.AuditRepository
+	approvalRepo repository.ApprovalRepository
+	txManager    repository.TransactionManager
+	taxService   TaxService
 }
 
-func NewExpenseService(db *gorm.DB, taxService TaxService) ExpenseService {
-	return &expenseService{db: db, taxService: taxService}
+func NewExpenseService(
+	expenseRepo repository.ExpenseRepository,
+	auditRepo repository.AuditRepository,
+	approvalRepo repository.ApprovalRepository,
+	txManager repository.TransactionManager,
+	taxService TaxService,
+) ExpenseService {
+	return &expenseService{
+		expenseRepo:  expenseRepo,
+		auditRepo:    auditRepo,
+		approvalRepo: approvalRepo,
+		txManager:    txManager,
+		taxService:   taxService,
+	}
 }
 
 // --- Implementation ---
@@ -111,14 +126,11 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 
 		switch req.FCTType {
 		case model.FCTTypeNet:
-			// NET: fct_amount = converted_usd * fct_rate
 			fctAmount = convertedAmountUSD.Mul(fctRate)
 		case model.FCTTypeGross:
-			// GROSS: fct_amount = converted_usd * fct_rate / (1 + fct_rate)
 			fctAmount = convertedAmountUSD.Mul(fctRate).Div(decimal.NewFromInt(1).Add(fctRate))
 		}
 
-		// Total payable = original_amount + FCT in original currency
 		fctInOriginal := fctAmount.Div(exchangeRate)
 		totalPayable = originalAmount.Add(fctInOriginal)
 	}
@@ -137,7 +149,6 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 			vatRate = activeVAT
 			vatAmount = convertedAmountUSD.Mul(vatRate)
 		}
-		// If no VAT rule found, proceed with 0 — not a hard error
 	}
 
 	// ---- Deductibility Logic ----
@@ -185,19 +196,19 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 		expense.VendorID = &parsed
 	}
 
-	// ---- DB Transaction ----
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if createErr := tx.Create(&expense).Error; createErr != nil {
-			return fmt.Errorf("failed to create expense: %w", createErr)
+	// Parse user UUID for audit/approval
+	var userUUID *uuid.UUID
+	if userID != "" {
+		parsed, parseErr := uuid.Parse(userID)
+		if parseErr == nil {
+			userUUID = &parsed
 		}
+	}
 
-		// Parse user UUID for audit/approval
-		var userUUID *uuid.UUID
-		if userID != "" {
-			parsed, parseErr := uuid.Parse(userID)
-			if parseErr == nil {
-				userUUID = &parsed
-			}
+	// ---- DB Transaction via TransactionManager ----
+	err = s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		if createErr := s.expenseRepo.Create(txCtx, &expense); createErr != nil {
+			return fmt.Errorf("failed to create expense: %w", createErr)
 		}
 
 		// Audit log for expense creation
@@ -209,14 +220,14 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 			"document_type":     req.DocumentType,
 			"description":       req.Description,
 		})
-		expenseAudit := model.AuditLog{
+		expenseAudit := &model.AuditLog{
 			UserID:     userUUID,
 			Action:     model.ActionCreateExpense,
 			EntityID:   expense.ID.String(),
 			EntityName: req.Description,
 			Details:    string(expenseAuditDetails),
 		}
-		if auditErr := tx.Create(&expenseAudit).Error; auditErr != nil {
+		if auditErr := s.auditRepo.Log(txCtx, expenseAudit); auditErr != nil {
 			return fmt.Errorf("failed to write expense audit log: %w", auditErr)
 		}
 
@@ -231,14 +242,14 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 			"description":       req.Description,
 		})
 
-		approvalReq := model.ApprovalRequest{
+		approvalReq := &model.ApprovalRequest{
 			RequestType: model.ApprovalReqTypeCreateExpense,
 			ReferenceID: expense.ID,
 			RequestData: string(requestData),
 			RequestedBy: userUUID,
 			Status:      model.ApprovalPending,
 		}
-		if createErr := tx.Create(&approvalReq).Error; createErr != nil {
+		if createErr := s.approvalRepo.Create(txCtx, approvalReq); createErr != nil {
 			return fmt.Errorf("failed to create approval request: %w", createErr)
 		}
 
@@ -248,14 +259,14 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 			"reference_id": expense.ID.String(),
 			"description":  req.Description,
 		})
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     userUUID,
 			Action:     model.ActionCreateApprovalRequest,
 			EntityID:   approvalReq.ID.String(),
 			EntityName: model.ApprovalReqTypeCreateExpense,
 			Details:    string(auditDetails),
 		}
-		if auditErr := tx.Create(&audit).Error; auditErr != nil {
+		if auditErr := s.auditRepo.Log(txCtx, audit); auditErr != nil {
 			return fmt.Errorf("failed to write audit log: %w", auditErr)
 		}
 
@@ -270,21 +281,15 @@ func (s *expenseService) CreateExpense(ctx context.Context, userID string, req C
 }
 
 func (s *expenseService) GetExpenses(ctx context.Context, page, limit int) ([]ExpenseResponse, int64, error) {
-	var total int64
-	if err := s.db.WithContext(ctx).Model(&model.Expense{}).Count(&total).Error; err != nil {
-		return nil, 0, fmt.Errorf("failed to count expenses: %w", err)
-	}
-
 	if page <= 0 {
 		page = 1
 	}
 	if limit <= 0 {
 		limit = 20
 	}
-	offset := (page - 1) * limit
 
-	var expenses []model.Expense
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Offset(offset).Limit(limit).Find(&expenses).Error; err != nil {
+	expenses, total, err := s.expenseRepo.List(ctx, page, limit)
+	if err != nil {
 		return nil, 0, fmt.Errorf("failed to fetch expenses: %w", err)
 	}
 

@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	"backend/internal/model"
-
-	"gorm.io/gorm"
+	"backend/internal/repository"
 )
 
 // --- DTOs ---
@@ -33,68 +32,36 @@ type RevenueService interface {
 }
 
 type revenueService struct {
-	db *gorm.DB
+	revenueRepo repository.RevenueRepository
 }
 
-func NewRevenueService(db *gorm.DB) RevenueService {
-	return &revenueService{db: db}
+func NewRevenueService(revenueRepo repository.RevenueRepository) RevenueService {
+	return &revenueService{revenueRepo: revenueRepo}
 }
 
 // --- Implementation ---
 
 func (s *revenueService) GetRevenueStatistics(ctx context.Context, filter RevenueFilter) ([]RevenueDataPoint, error) {
-	// Validate group_by
 	groupBy := filter.GroupBy
 	switch groupBy {
 	case "week", "month", "quarter", "year":
 		// valid
 	default:
-		groupBy = "month" // default
+		groupBy = "month"
 	}
 
-	// Build raw SQL using DATE_TRUNC — only APPROVED invoices
-	query := `
-		SELECT
-			TO_CHAR(DATE_TRUNC($1, i.created_at), 'YYYY-MM-DD') AS period,
-			COALESCE(SUM(CASE WHEN i.reference_type = $4 THEN i.total_amount ELSE 0 END), 0) AS total_revenue,
-			COALESCE(SUM(CASE WHEN i.reference_type IN ($5, $6) THEN i.total_amount ELSE 0 END), 0) AS total_expense,
-			COALESCE(SUM(CASE WHEN i.reference_type = $4 THEN i.tax_amount ELSE 0 END), 0) AS total_tax_collected,
-			COALESCE(SUM(CASE WHEN i.reference_type IN ($5, $6) THEN i.tax_amount ELSE 0 END), 0) AS total_tax_paid,
-			COALESCE(SUM(i.side_fees), 0) AS total_side_fees
-		FROM invoices i
-		WHERE i.approval_status = $7
-		  AND i.created_at >= $2::timestamptz
-		  AND i.created_at <= $3::timestamptz
-		GROUP BY DATE_TRUNC($1, i.created_at)
-		ORDER BY period
-	`
-
-	type rawResult struct {
-		Period            string  `gorm:"column:period"`
-		TotalRevenue      float64 `gorm:"column:total_revenue"`
-		TotalExpense      float64 `gorm:"column:total_expense"`
-		TotalTaxCollected float64 `gorm:"column:total_tax_collected"`
-		TotalTaxPaid      float64 `gorm:"column:total_tax_paid"`
-		TotalSideFees     float64 `gorm:"column:total_side_fees"`
-	}
-
-	var rows []rawResult
-	if err := s.db.WithContext(ctx).Raw(query,
-		groupBy,
-		filter.StartDate,
-		filter.EndDate,
-		model.RefTypeOrderExport,
-		model.RefTypeOrderImport,
-		model.RefTypeExpense,
-		model.ApprovalApproved,
-	).Scan(&rows).Error; err != nil {
-		return nil, fmt.Errorf("failed to query revenue statistics: %w", err)
+	rows, err := s.revenueRepo.GetRevenueStatistics(ctx,
+		groupBy, filter.StartDate, filter.EndDate,
+		model.RefTypeOrderExport, model.RefTypeOrderImport, model.RefTypeExpense, model.ApprovalApproved,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	result := make([]RevenueDataPoint, 0, len(rows))
 	for _, r := range rows {
 		result = append(result, RevenueDataPoint{
-			Period:            r.Period,
+			Period:            fmt.Sprintf("%.0f", r.Period),
 			TotalRevenue:      fmt.Sprintf("%.4f", r.TotalRevenue),
 			TotalExpense:      fmt.Sprintf("%.4f", r.TotalExpense),
 			TotalTaxCollected: fmt.Sprintf("%.4f", r.TotalTaxCollected),

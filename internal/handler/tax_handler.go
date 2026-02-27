@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"backend/internal/middleware"
 	"backend/internal/service"
@@ -29,23 +30,38 @@ func (h *TaxHandler) RegisterRoutes(router *gin.RouterGroup) {
 	}
 }
 
-// GetTaxRules returns all tax rules ordered by effective_from DESC
+// GetTaxRules returns paginated tax rules ordered by effective_from DESC
 // @Summary      List tax rules
-// @Description  Retrieves all tax rules ordered by effective_from descending
+// @Description  Retrieves paginated tax rules ordered by effective_from descending
 // @Tags         tax-rules
 // @Security     BearerAuth
 // @Produce      json
+// @Param        page   query     int  false  "Page number (default: 1)"
+// @Param        limit  query     int  false  "Items per page (default: 20)"
 // @Success      200  {object}  response.Response{data=[]service.TaxRuleResponse}
 // @Failure      500  {object}  response.Response
 // @Router       /api/tax-rules [get]
 func (h *TaxHandler) GetTaxRules(c *gin.Context) {
-	rules, err := h.taxService.GetTaxRules(c.Request.Context())
+	page := 1
+	limit := 20
+	if p := c.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	rules, total, err := h.taxService.GetTaxRules(c.Request.Context(), page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, err.Error()))
 		return
 	}
 
-	c.JSON(http.StatusOK, response.Success(http.StatusOK, rules))
+	c.JSON(http.StatusOK, response.SuccessWithPagination(http.StatusOK, rules, page, limit, total))
 }
 
 // GetActiveTaxRate returns the currently active tax rate for a given type

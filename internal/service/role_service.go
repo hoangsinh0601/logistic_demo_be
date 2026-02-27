@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"backend/internal/model"
+	"backend/internal/repository"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -58,18 +60,19 @@ type RoleService interface {
 }
 
 type roleService struct {
-	db *gorm.DB
+	roleRepo  repository.RoleRepository
+	txManager repository.TransactionManager
 }
 
-func NewRoleService(db *gorm.DB) RoleService {
-	return &roleService{db: db}
+func NewRoleService(roleRepo repository.RoleRepository, txManager repository.TransactionManager) RoleService {
+	return &roleService{roleRepo: roleRepo, txManager: txManager}
 }
 
 // --- Implementation ---
 
 func (s *roleService) ListRoles(ctx context.Context) ([]RoleResponse, error) {
-	var roles []model.Role
-	if err := s.db.WithContext(ctx).Preload("Permissions").Order("name ASC").Find(&roles).Error; err != nil {
+	roles, err := s.roleRepo.ListAll(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("failed to fetch roles: %w", err)
 	}
 
@@ -86,12 +89,12 @@ func (s *roleService) GetRole(ctx context.Context, id string) (*RoleResponse, er
 		return nil, fmt.Errorf("invalid role id: %w", err)
 	}
 
-	var role model.Role
-	if err := s.db.WithContext(ctx).Preload("Permissions").First(&role, "id = ?", roleID).Error; err != nil {
+	role, err := s.roleRepo.FindByIDWithPermissions(ctx, roleID)
+	if err != nil {
 		return nil, fmt.Errorf("role not found: %w", err)
 	}
 
-	resp := toRoleResponse(role)
+	resp := toRoleResponse(*role)
 	return &resp, nil
 }
 
@@ -102,13 +105,12 @@ func (s *roleService) CreateRole(ctx context.Context, req CreateRoleRequest) (*R
 		IsSystem:    false,
 	}
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&role).Error; err != nil {
+	err := s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.roleRepo.Create(txCtx, &role); err != nil {
 			return fmt.Errorf("failed to create role: %w", err)
 		}
 
 		if len(req.Permissions) > 0 {
-			var perms []model.Permission
 			permIDs := make([]uuid.UUID, 0, len(req.Permissions))
 			for _, pid := range req.Permissions {
 				parsed, parseErr := uuid.Parse(pid)
@@ -117,10 +119,7 @@ func (s *roleService) CreateRole(ctx context.Context, req CreateRoleRequest) (*R
 				}
 				permIDs = append(permIDs, parsed)
 			}
-			if err := tx.Where("id IN ?", permIDs).Find(&perms).Error; err != nil {
-				return fmt.Errorf("failed to fetch permissions: %w", err)
-			}
-			if err := tx.Model(&role).Association("Permissions").Replace(perms); err != nil {
+			if err := s.roleRepo.UpdatePermissions(txCtx, role.ID, permIDs); err != nil {
 				return fmt.Errorf("failed to assign permissions: %w", err)
 			}
 		}
@@ -132,7 +131,6 @@ func (s *roleService) CreateRole(ctx context.Context, req CreateRoleRequest) (*R
 		return nil, err
 	}
 
-	// Reload with permissions
 	return s.GetRole(ctx, role.ID.String())
 }
 
@@ -142,15 +140,15 @@ func (s *roleService) UpdateRole(ctx context.Context, id string, req UpdateRoleR
 		return nil, fmt.Errorf("invalid role id: %w", err)
 	}
 
-	var role model.Role
-	if err := s.db.WithContext(ctx).First(&role, "id = ?", roleID).Error; err != nil {
+	role, err := s.roleRepo.FindByID(ctx, roleID)
+	if err != nil {
 		return nil, fmt.Errorf("role not found: %w", err)
 	}
 
 	role.Name = req.Name
 	role.Description = req.Description
 
-	if err := s.db.WithContext(ctx).Save(&role).Error; err != nil {
+	if err := s.roleRepo.Update(ctx, role); err != nil {
 		return nil, fmt.Errorf("failed to update role: %w", err)
 	}
 
@@ -163,8 +161,8 @@ func (s *roleService) DeleteRole(ctx context.Context, id string) error {
 		return fmt.Errorf("invalid role id: %w", err)
 	}
 
-	var role model.Role
-	if err := s.db.WithContext(ctx).First(&role, "id = ?", roleID).Error; err != nil {
+	role, err := s.roleRepo.FindByID(ctx, roleID)
+	if err != nil {
 		return fmt.Errorf("role not found: %w", err)
 	}
 
@@ -172,12 +170,12 @@ func (s *roleService) DeleteRole(ctx context.Context, id string) error {
 		return fmt.Errorf("cannot delete system role '%s'", role.Name)
 	}
 
-	// Clear associations before deleting
-	if err := s.db.WithContext(ctx).Model(&role).Association("Permissions").Clear(); err != nil {
+	// Clear associations then delete
+	if err := s.roleRepo.UpdatePermissions(ctx, roleID, []uuid.UUID{}); err != nil {
 		return fmt.Errorf("failed to clear permissions: %w", err)
 	}
 
-	if err := s.db.WithContext(ctx).Delete(&role).Error; err != nil {
+	if err := s.roleRepo.Delete(ctx, roleID); err != nil {
 		return fmt.Errorf("failed to delete role: %w", err)
 	}
 
@@ -185,8 +183,8 @@ func (s *roleService) DeleteRole(ctx context.Context, id string) error {
 }
 
 func (s *roleService) ListPermissions(ctx context.Context) ([]PermissionResponse, error) {
-	var perms []model.Permission
-	if err := s.db.WithContext(ctx).Order("\"group\" ASC, code ASC").Find(&perms).Error; err != nil {
+	perms, err := s.roleRepo.ListPermissions(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("failed to fetch permissions: %w", err)
 	}
 
@@ -203,27 +201,21 @@ func (s *roleService) UpdateRolePermissions(ctx context.Context, roleID string, 
 		return nil, fmt.Errorf("invalid role id: %w", err)
 	}
 
-	var role model.Role
-	if err := s.db.WithContext(ctx).First(&role, "id = ?", id).Error; err != nil {
+	_, err = s.roleRepo.FindByID(ctx, id)
+	if err != nil {
 		return nil, fmt.Errorf("role not found: %w", err)
 	}
 
-	var perms []model.Permission
-	if len(req.PermissionIDs) > 0 {
-		permIDs := make([]uuid.UUID, 0, len(req.PermissionIDs))
-		for _, pid := range req.PermissionIDs {
-			parsed, parseErr := uuid.Parse(pid)
-			if parseErr != nil {
-				return nil, fmt.Errorf("invalid permission id '%s': %w", pid, parseErr)
-			}
-			permIDs = append(permIDs, parsed)
+	permIDs := make([]uuid.UUID, 0, len(req.PermissionIDs))
+	for _, pid := range req.PermissionIDs {
+		parsed, parseErr := uuid.Parse(pid)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid permission id '%s': %w", pid, parseErr)
 		}
-		if err := s.db.WithContext(ctx).Where("id IN ?", permIDs).Find(&perms).Error; err != nil {
-			return nil, fmt.Errorf("failed to fetch permissions: %w", err)
-		}
+		permIDs = append(permIDs, parsed)
 	}
 
-	if err := s.db.WithContext(ctx).Model(&role).Association("Permissions").Replace(perms); err != nil {
+	if err := s.roleRepo.UpdatePermissions(ctx, id, permIDs); err != nil {
 		return nil, fmt.Errorf("failed to update permissions: %w", err)
 	}
 
@@ -231,21 +223,14 @@ func (s *roleService) UpdateRolePermissions(ctx context.Context, roleID string, 
 }
 
 func (s *roleService) GetPermissionsByRoleName(ctx context.Context, roleName string) ([]string, error) {
-	var role model.Role
-	if err := s.db.WithContext(ctx).Preload("Permissions").Where("name = ?", roleName).First(&role).Error; err != nil {
+	codes, err := s.roleRepo.GetPermissionsByRoleName(ctx, roleName)
+	if err != nil {
 		return nil, fmt.Errorf("role '%s' not found: %w", roleName, err)
-	}
-
-	codes := make([]string, 0, len(role.Permissions))
-	for _, p := range role.Permissions {
-		codes = append(codes, p.Code)
 	}
 	return codes, nil
 }
 
-// SeedDefaultRolesAndPermissions creates the default permissions and roles if not already present
 func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error {
-	// Define all permissions
 	defaultPermissions := []model.Permission{
 		{Code: "dashboard.read", Name: "Xem Dashboard & Thống kê TC", Group: "dashboard"},
 		{Code: "inventory.read", Name: "Xem Kho hàng", Group: "inventory"},
@@ -259,48 +244,26 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 		{Code: "users.delete", Name: "Xóa Người dùng", Group: "users"},
 		{Code: "audit.read", Name: "Xem Lịch sử hoạt động", Group: "audit"},
 		{Code: "roles.manage", Name: "Quản lý Phân quyền", Group: "roles"},
-		// Invoice permissions
 		{Code: "invoices.read", Name: "Xem Hóa đơn", Group: "invoices"},
 		{Code: "invoices.write", Name: "Tạo Hóa đơn", Group: "invoices"},
-		// Approval permissions
 		{Code: "approvals.read", Name: "Xem Yêu cầu duyệt", Group: "approvals"},
 		{Code: "approvals.approve", Name: "Duyệt / Từ chối yêu cầu", Group: "approvals"},
-		// Finance
 		{Code: "finance.read", Name: "Xem Báo cáo Tài chính", Group: "finance"},
 	}
 
 	// Upsert permissions
 	for i := range defaultPermissions {
 		p := &defaultPermissions[i]
-		var existing model.Permission
-		result := s.db.WithContext(ctx).Where("code = ?", p.Code).First(&existing)
-		if result.Error != nil {
-			// Not found, create
-			if err := s.db.WithContext(ctx).Create(p).Error; err != nil {
-				return fmt.Errorf("failed to seed permission '%s': %w", p.Code, err)
-			}
-		} else {
-			p.ID = existing.ID // Use existing ID
-			// Update name/group if changed
-			s.db.WithContext(ctx).Exec(
-				`UPDATE permissions SET name = ?, "group" = ? WHERE id = ?`,
-				p.Name, p.Group, existing.ID,
-			)
+		if err := s.roleRepo.FindOrCreatePermission(ctx, p); err != nil {
+			return fmt.Errorf("failed to seed permission '%s': %w", p.Code, err)
 		}
 	}
 
-	// Build permission maps by code for easy lookup
 	permByCode := make(map[string]model.Permission)
 	for _, p := range defaultPermissions {
 		permByCode[p.Code] = p
 	}
 
-	allPerms := make([]model.Permission, 0, len(defaultPermissions))
-	for _, p := range defaultPermissions {
-		allPerms = append(allPerms, p)
-	}
-
-	// Define roles with their permissions
 	roleDefinitions := map[string]struct {
 		Description string
 		PermCodes   []string
@@ -345,28 +308,30 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 	}
 
 	for roleName, def := range roleDefinitions {
-		var role model.Role
-		result := s.db.WithContext(ctx).Where("name = ?", roleName).First(&role)
-		if result.Error != nil {
-			// Create role
-			role = model.Role{
-				Name:        roleName,
-				Description: def.Description,
-				IsSystem:    true,
-			}
-			if err := s.db.WithContext(ctx).Create(&role).Error; err != nil {
-				return fmt.Errorf("failed to seed role '%s': %w", roleName, err)
+		role, err := s.roleRepo.FindByName(ctx, roleName)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				role = &model.Role{
+					Name:        roleName,
+					Description: def.Description,
+					IsSystem:    true,
+				}
+				if createErr := s.roleRepo.Create(ctx, role); createErr != nil {
+					return fmt.Errorf("failed to seed role '%s': %w", roleName, createErr)
+				}
+			} else {
+				return fmt.Errorf("failed to check role '%s': %w", roleName, err)
 			}
 		}
 
 		// Assign permissions
-		perms := make([]model.Permission, 0, len(def.PermCodes))
+		permIDs := make([]uuid.UUID, 0, len(def.PermCodes))
 		for _, code := range def.PermCodes {
 			if p, ok := permByCode[code]; ok {
-				perms = append(perms, p)
+				permIDs = append(permIDs, p.ID)
 			}
 		}
-		if err := s.db.WithContext(ctx).Model(&role).Association("Permissions").Replace(perms); err != nil {
+		if err := s.roleRepo.UpdatePermissions(ctx, role.ID, permIDs); err != nil {
 			return fmt.Errorf("failed to assign permissions to role '%s': %w", roleName, err)
 		}
 	}

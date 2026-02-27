@@ -7,11 +7,10 @@ import (
 	"time"
 
 	"backend/internal/model"
+	"backend/internal/repository"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // --- DTOs ---
@@ -58,12 +57,39 @@ type ApprovalService interface {
 }
 
 type approvalService struct {
-	db  *gorm.DB
-	hub interface{ GetBroadcast() chan []byte } // optional websocket hub
+	approvalRepo repository.ApprovalRepository
+	auditRepo    repository.AuditRepository
+	orderRepo    repository.OrderRepository
+	productRepo  repository.ProductRepository
+	expenseRepo  repository.ExpenseRepository
+	invoiceRepo  repository.InvoiceRepository
+	taxRuleRepo  repository.TaxRuleRepository
+	invTxRepo    repository.InventoryTxRepository
+	txManager    repository.TransactionManager
 }
 
-func NewApprovalService(db *gorm.DB) ApprovalService {
-	return &approvalService{db: db}
+func NewApprovalService(
+	approvalRepo repository.ApprovalRepository,
+	auditRepo repository.AuditRepository,
+	orderRepo repository.OrderRepository,
+	productRepo repository.ProductRepository,
+	expenseRepo repository.ExpenseRepository,
+	invoiceRepo repository.InvoiceRepository,
+	taxRuleRepo repository.TaxRuleRepository,
+	invTxRepo repository.InventoryTxRepository,
+	txManager repository.TransactionManager,
+) ApprovalService {
+	return &approvalService{
+		approvalRepo: approvalRepo,
+		auditRepo:    auditRepo,
+		orderRepo:    orderRepo,
+		productRepo:  productRepo,
+		expenseRepo:  expenseRepo,
+		invoiceRepo:  invoiceRepo,
+		taxRuleRepo:  taxRuleRepo,
+		invTxRepo:    invTxRepo,
+		txManager:    txManager,
+	}
 }
 
 // --- Implementation ---
@@ -82,7 +108,7 @@ func (s *approvalService) CreateApprovalRequest(ctx context.Context, req CreateA
 		}
 	}
 
-	approval := model.ApprovalRequest{
+	approval := &model.ApprovalRequest{
 		RequestType: req.RequestType,
 		ReferenceID: refID,
 		RequestData: req.RequestData,
@@ -90,8 +116,8 @@ func (s *approvalService) CreateApprovalRequest(ctx context.Context, req CreateA
 		RequestedBy: requesterID,
 	}
 
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if createErr := tx.Create(&approval).Error; createErr != nil {
+	err = s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		if createErr := s.approvalRepo.Create(txCtx, approval); createErr != nil {
 			return fmt.Errorf("failed to create approval request: %w", createErr)
 		}
 
@@ -100,14 +126,14 @@ func (s *approvalService) CreateApprovalRequest(ctx context.Context, req CreateA
 			"request_type": req.RequestType,
 			"reference_id": req.ReferenceID,
 		})
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     requesterID,
 			Action:     model.ActionCreateApprovalRequest,
 			EntityID:   approval.ID.String(),
 			EntityName: req.RequestType,
 			Details:    string(details),
 		}
-		if auditErr := tx.Create(&audit).Error; auditErr != nil {
+		if auditErr := s.auditRepo.Log(txCtx, audit); auditErr != nil {
 			return fmt.Errorf("failed to write audit log: %w", auditErr)
 		}
 
@@ -119,25 +145,15 @@ func (s *approvalService) CreateApprovalRequest(ctx context.Context, req CreateA
 	}
 
 	// Reload with relations
-	if loadErr := s.db.WithContext(ctx).Preload("Requester").First(&approval, "id = ?", approval.ID).Error; loadErr != nil {
+	reloaded, loadErr := s.approvalRepo.FindByIDWithRelations(ctx, approval.ID)
+	if loadErr != nil {
 		return ApprovalRequestResponse{}, fmt.Errorf("failed to reload approval request: %w", loadErr)
 	}
 
-	return toApprovalResponse(approval), nil
+	return toApprovalResponse(*reloaded), nil
 }
 
 func (s *approvalService) ListApprovalRequests(ctx context.Context, filter ApprovalFilter) ([]ApprovalRequestResponse, int64, error) {
-	var total int64
-	query := s.db.WithContext(ctx).Model(&model.ApprovalRequest{})
-
-	if filter.Status != "" {
-		query = query.Where("status = ?", filter.Status)
-	}
-
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, fmt.Errorf("failed to count approval requests: %w", err)
-	}
-
 	if filter.Page <= 0 {
 		filter.Page = 1
 	}
@@ -145,19 +161,8 @@ func (s *approvalService) ListApprovalRequests(ctx context.Context, filter Appro
 		filter.Limit = 20
 	}
 
-	offset := (filter.Page - 1) * filter.Limit
-	var approvals []model.ApprovalRequest
-	fetchQuery := s.db.WithContext(ctx).
-		Preload("Requester").
-		Preload("Approver")
-	if filter.Status != "" {
-		fetchQuery = fetchQuery.Where("status = ?", filter.Status)
-	}
-	if err := fetchQuery.
-		Order("created_at DESC").
-		Offset(offset).
-		Limit(filter.Limit).
-		Find(&approvals).Error; err != nil {
+	approvals, total, err := s.approvalRepo.List(ctx, filter.Status, filter.Page, filter.Limit)
+	if err != nil {
 		return nil, 0, fmt.Errorf("failed to fetch approval requests: %w", err)
 	}
 
@@ -180,9 +185,11 @@ func (s *approvalService) ApproveRequest(ctx context.Context, id string, userID 
 		return ApprovalRequestResponse{}, fmt.Errorf("invalid user id: %w", err)
 	}
 
-	var approval model.ApprovalRequest
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if findErr := tx.First(&approval, "id = ?", approvalID).Error; findErr != nil {
+	var approval *model.ApprovalRequest
+	err = s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		var findErr error
+		approval, findErr = s.approvalRepo.FindByID(txCtx, approvalID)
+		if findErr != nil {
 			return fmt.Errorf("approval request not found: %w", findErr)
 		}
 
@@ -195,12 +202,12 @@ func (s *approvalService) ApproveRequest(ctx context.Context, id string, userID 
 		approval.ApprovedBy = &approverID
 		approval.ApprovedAt = &now
 
-		if saveErr := tx.Save(&approval).Error; saveErr != nil {
+		if saveErr := s.approvalRepo.Update(txCtx, approval); saveErr != nil {
 			return fmt.Errorf("failed to update approval request: %w", saveErr)
 		}
 
 		// Execute post-approval actions based on request type
-		if execErr := s.executeApproval(ctx, tx, approval, &approverID); execErr != nil {
+		if execErr := s.executeApproval(txCtx, *approval, &approverID); execErr != nil {
 			return fmt.Errorf("failed to execute approval actions: %w", execErr)
 		}
 
@@ -209,14 +216,14 @@ func (s *approvalService) ApproveRequest(ctx context.Context, id string, userID 
 			"request_type": approval.RequestType,
 			"reference_id": approval.ReferenceID.String(),
 		})
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     &approverID,
 			Action:     model.ActionApproveRequest,
 			EntityID:   approval.ID.String(),
 			EntityName: approval.RequestType,
 			Details:    string(details),
 		}
-		if auditErr := tx.Create(&audit).Error; auditErr != nil {
+		if auditErr := s.auditRepo.Log(txCtx, audit); auditErr != nil {
 			return fmt.Errorf("failed to write audit log: %w", auditErr)
 		}
 
@@ -228,11 +235,12 @@ func (s *approvalService) ApproveRequest(ctx context.Context, id string, userID 
 	}
 
 	// Reload with relations
-	if loadErr := s.db.WithContext(ctx).Preload("Requester").Preload("Approver").First(&approval, "id = ?", approval.ID).Error; loadErr != nil {
+	reloaded, loadErr := s.approvalRepo.FindByIDWithRelations(ctx, approval.ID)
+	if loadErr != nil {
 		return ApprovalRequestResponse{}, fmt.Errorf("failed to reload approval request: %w", loadErr)
 	}
 
-	return toApprovalResponse(approval), nil
+	return toApprovalResponse(*reloaded), nil
 }
 
 func (s *approvalService) RejectRequest(ctx context.Context, id string, userID string, reason string) (ApprovalRequestResponse, error) {
@@ -246,9 +254,11 @@ func (s *approvalService) RejectRequest(ctx context.Context, id string, userID s
 		return ApprovalRequestResponse{}, fmt.Errorf("invalid user id: %w", err)
 	}
 
-	var approval model.ApprovalRequest
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if findErr := tx.First(&approval, "id = ?", approvalID).Error; findErr != nil {
+	var approval *model.ApprovalRequest
+	err = s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		var findErr error
+		approval, findErr = s.approvalRepo.FindByID(txCtx, approvalID)
+		if findErr != nil {
 			return fmt.Errorf("approval request not found: %w", findErr)
 		}
 
@@ -262,14 +272,13 @@ func (s *approvalService) RejectRequest(ctx context.Context, id string, userID s
 		approval.ApprovedAt = &now
 		approval.RejectionReason = reason
 
-		if saveErr := tx.Save(&approval).Error; saveErr != nil {
+		if saveErr := s.approvalRepo.Update(txCtx, approval); saveErr != nil {
 			return fmt.Errorf("failed to update approval request: %w", saveErr)
 		}
 
 		// If rejecting a CREATE_ORDER, update the order status to REJECTED
 		if approval.RequestType == model.ApprovalReqTypeCreateOrder {
-			if updateErr := tx.Model(&model.Order{}).Where("id = ?", approval.ReferenceID).
-				Update("status", model.OrderStatusRejected).Error; updateErr != nil {
+			if updateErr := s.orderRepo.UpdateStatus(txCtx, approval.ReferenceID, model.OrderStatusRejected); updateErr != nil {
 				return fmt.Errorf("failed to update order status: %w", updateErr)
 			}
 		}
@@ -280,14 +289,14 @@ func (s *approvalService) RejectRequest(ctx context.Context, id string, userID s
 			"reference_id": approval.ReferenceID.String(),
 			"reason":       reason,
 		})
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     &approverID,
 			Action:     model.ActionRejectRequest,
 			EntityID:   approval.ID.String(),
 			EntityName: approval.RequestType,
 			Details:    string(details),
 		}
-		if auditErr := tx.Create(&audit).Error; auditErr != nil {
+		if auditErr := s.auditRepo.Log(txCtx, audit); auditErr != nil {
 			return fmt.Errorf("failed to write audit log: %w", auditErr)
 		}
 
@@ -299,40 +308,31 @@ func (s *approvalService) RejectRequest(ctx context.Context, id string, userID s
 	}
 
 	// Reload
-	if loadErr := s.db.WithContext(ctx).Preload("Requester").Preload("Approver").First(&approval, "id = ?", approval.ID).Error; loadErr != nil {
+	reloaded, loadErr := s.approvalRepo.FindByIDWithRelations(ctx, approval.ID)
+	if loadErr != nil {
 		return ApprovalRequestResponse{}, fmt.Errorf("failed to reload approval request: %w", loadErr)
 	}
 
-	return toApprovalResponse(approval), nil
+	return toApprovalResponse(*reloaded), nil
 }
 
-// executeApproval performs the side effects of approving a request:
-// For orders: update stock, create inventory transactions, create invoice
-// For expenses: create invoice
-// For products: no additional action needed
-func (s *approvalService) executeApproval(ctx context.Context, tx *gorm.DB, approval model.ApprovalRequest, approverID *uuid.UUID) error {
+// executeApproval performs side effects of approving a request
+func (s *approvalService) executeApproval(ctx context.Context, approval model.ApprovalRequest, approverID *uuid.UUID) error {
 	switch approval.RequestType {
 	case model.ApprovalReqTypeCreateOrder:
-		return s.executeOrderApproval(ctx, tx, approval, approverID)
+		return s.executeOrderApproval(ctx, approval, approverID)
 	case model.ApprovalReqTypeCreateExpense:
-		return s.executeExpenseApproval(ctx, tx, approval, approverID)
+		return s.executeExpenseApproval(ctx, approval, approverID)
 	case model.ApprovalReqTypeCreateProduct:
-		// Products are created immediately — approval is just a confirmation
-		return nil
+		return nil // Products are created immediately
 	default:
 		return fmt.Errorf("unknown request type: %s", approval.RequestType)
 	}
 }
 
-// executeOrderApproval handles post-approval for orders:
-// 1. Load order + items
-// 2. Update stock per product (with row locking)
-// 3. Create inventory transactions
-// 4. Update order status -> COMPLETED
-// 5. Create invoice
-func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB, approval model.ApprovalRequest, approverID *uuid.UUID) error {
-	var order model.Order
-	if err := tx.Preload("Items").First(&order, "id = ?", approval.ReferenceID).Error; err != nil {
+func (s *approvalService) executeOrderApproval(ctx context.Context, approval model.ApprovalRequest, approverID *uuid.UUID) error {
+	order, err := s.orderRepo.FindByIDWithItems(ctx, approval.ReferenceID)
+	if err != nil {
 		return fmt.Errorf("order not found: %w", err)
 	}
 
@@ -345,10 +345,9 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 
 	// Process each order item — update stock + create inventory transactions
 	for _, item := range order.Items {
-		var product model.Product
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", item.ProductID).First(&product).Error; err != nil {
-			return fmt.Errorf("product not found: %s: %w", item.ProductID, err)
+		product, findErr := s.productRepo.FindByIDForUpdate(ctx, item.ProductID)
+		if findErr != nil {
+			return fmt.Errorf("product not found: %s: %w", item.ProductID, findErr)
 		}
 
 		// Validate export capacity
@@ -366,8 +365,8 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 		stockAfter := product.CurrentStock + quantityChanged
 
 		// Update product stock
-		if err := tx.Model(&product).Update("current_stock", stockAfter).Error; err != nil {
-			return fmt.Errorf("failed to update stock for product %s: %w", product.Name, err)
+		if updateErr := s.productRepo.UpdateStock(ctx, product.ID, stockAfter); updateErr != nil {
+			return fmt.Errorf("failed to update stock for product %s: %w", product.Name, updateErr)
 		}
 
 		// Create inventory transaction
@@ -376,21 +375,21 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 			txType = model.TxTypeOut
 		}
 
-		invTx := model.InventoryTransaction{
+		invTx := &model.InventoryTransaction{
 			ProductID:       product.ID,
 			OrderID:         &order.ID,
 			TransactionType: txType,
 			QuantityChanged: quantityChanged,
 			StockAfter:      stockAfter,
 		}
-		if err := tx.Create(&invTx).Error; err != nil {
-			return fmt.Errorf("failed to record inventory transaction: %w", err)
+		if createErr := s.invTxRepo.Create(ctx, invTx); createErr != nil {
+			return fmt.Errorf("failed to record inventory transaction: %w", createErr)
 		}
 	}
 
 	// Update order status to COMPLETED
-	if err := tx.Model(&order).Update("status", model.OrderStatusCompleted).Error; err != nil {
-		return fmt.Errorf("failed to update order status: %w", err)
+	if updateErr := s.orderRepo.UpdateStatus(ctx, order.ID, model.OrderStatusCompleted); updateErr != nil {
+		return fmt.Errorf("failed to update order status: %w", updateErr)
 	}
 
 	// Create invoice
@@ -411,8 +410,8 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 	if reqData.TaxRuleID != "" {
 		if parsed, parseErr := uuid.Parse(reqData.TaxRuleID); parseErr == nil {
 			taxRuleID = &parsed
-			var taxRule model.TaxRule
-			if err := tx.First(&taxRule, "id = ?", parsed).Error; err == nil {
+			taxRule, findErr := s.taxRuleRepo.FindByID(ctx, parsed)
+			if findErr == nil {
 				taxAmount = subtotal.Mul(taxRule.Rate)
 			}
 		}
@@ -420,7 +419,7 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 
 	totalAmount := subtotal.Add(taxAmount).Add(sideFees)
 
-	invoiceNo, err := s.generateInvoiceNo(tx)
+	invoiceNo, err := s.generateInvoiceNo(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to generate invoice number: %w", err)
 	}
@@ -430,7 +429,7 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 		refType = model.RefTypeOrderExport
 	}
 
-	invoice := model.Invoice{
+	invoice := &model.Invoice{
 		InvoiceNo:      invoiceNo,
 		ReferenceType:  refType,
 		ReferenceID:    order.ID,
@@ -444,8 +443,8 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 		ApprovedAt:     approval.ApprovedAt,
 		Note:           order.Note,
 	}
-	if err := tx.Create(&invoice).Error; err != nil {
-		return fmt.Errorf("failed to create invoice: %w", err)
+	if createErr := s.invoiceRepo.Create(ctx, invoice); createErr != nil {
+		return fmt.Errorf("failed to create invoice: %w", createErr)
 	}
 
 	// Audit log for invoice creation
@@ -455,37 +454,36 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, tx *gorm.DB,
 		"order_code": order.OrderCode,
 		"order_type": order.Type,
 	})
-	auditInvoice := model.AuditLog{
+	auditInvoice := &model.AuditLog{
 		UserID:     approverID,
 		Action:     model.ActionCreateInvoiceFromApproval,
 		EntityID:   invoice.ID.String(),
 		EntityName: invoiceNo,
 		Details:    string(invoiceDetails),
 	}
-	if err := tx.Create(&auditInvoice).Error; err != nil {
-		return fmt.Errorf("failed to write invoice audit log: %w", err)
+	if auditErr := s.auditRepo.Log(ctx, auditInvoice); auditErr != nil {
+		return fmt.Errorf("failed to write invoice audit log: %w", auditErr)
 	}
 
 	return nil
 }
 
-// executeExpenseApproval handles post-approval for expenses — creates an invoice
-func (s *approvalService) executeExpenseApproval(ctx context.Context, tx *gorm.DB, approval model.ApprovalRequest, approverID *uuid.UUID) error {
-	var expense model.Expense
-	if err := tx.First(&expense, "id = ?", approval.ReferenceID).Error; err != nil {
+func (s *approvalService) executeExpenseApproval(ctx context.Context, approval model.ApprovalRequest, approverID *uuid.UUID) error {
+	expense, err := s.expenseRepo.FindByID(ctx, approval.ReferenceID)
+	if err != nil {
 		return fmt.Errorf("expense not found: %w", err)
 	}
 
-	invoiceNo, err := s.generateInvoiceNo(tx)
-	if err != nil {
-		return fmt.Errorf("failed to generate invoice number: %w", err)
+	invoiceNo, genErr := s.generateInvoiceNo(ctx)
+	if genErr != nil {
+		return fmt.Errorf("failed to generate invoice number: %w", genErr)
 	}
 
 	subtotal := expense.ConvertedAmountUSD
 	taxAmount := expense.VATAmount.Add(expense.FCTAmount)
 	totalAmount := subtotal.Add(taxAmount)
 
-	invoice := model.Invoice{
+	invoice := &model.Invoice{
 		InvoiceNo:      invoiceNo,
 		ReferenceType:  model.RefTypeExpense,
 		ReferenceID:    expense.ID,
@@ -499,8 +497,8 @@ func (s *approvalService) executeExpenseApproval(ctx context.Context, tx *gorm.D
 		Note:           expense.Description,
 	}
 
-	if err := tx.Create(&invoice).Error; err != nil {
-		return fmt.Errorf("failed to create invoice from expense: %w", err)
+	if createErr := s.invoiceRepo.Create(ctx, invoice); createErr != nil {
+		return fmt.Errorf("failed to create invoice from expense: %w", createErr)
 	}
 
 	// Audit log for invoice creation
@@ -509,31 +507,26 @@ func (s *approvalService) executeExpenseApproval(ctx context.Context, tx *gorm.D
 		"total":      totalAmount.StringFixed(4),
 		"expense_id": expense.ID.String(),
 	})
-	auditInvoice := model.AuditLog{
+	auditInvoice := &model.AuditLog{
 		UserID:     approverID,
 		Action:     model.ActionCreateInvoiceFromApproval,
 		EntityID:   invoice.ID.String(),
 		EntityName: invoiceNo,
 		Details:    string(invoiceDetails),
 	}
-	if err := tx.Create(&auditInvoice).Error; err != nil {
-		return fmt.Errorf("failed to write invoice audit log: %w", err)
+	if auditErr := s.auditRepo.Log(ctx, auditInvoice); auditErr != nil {
+		return fmt.Errorf("failed to write invoice audit log: %w", auditErr)
 	}
 
 	return nil
 }
 
-func (s *approvalService) generateInvoiceNo(tx *gorm.DB) (string, error) {
+func (s *approvalService) generateInvoiceNo(ctx context.Context) (string, error) {
 	today := time.Now().Format("20060102")
 	prefix := "INV-" + today + "-"
 
-	// Use advisory lock to prevent concurrent duplicate invoice numbers
-	tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", prefix)
-
-	var count int64
-	if err := tx.Model(&model.Invoice{}).
-		Where("invoice_no LIKE ?", prefix+"%").
-		Count(&count).Error; err != nil {
+	count, err := s.invoiceRepo.CountByPrefix(ctx, prefix)
+	if err != nil {
 		return "", err
 	}
 

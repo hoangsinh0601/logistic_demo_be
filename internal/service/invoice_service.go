@@ -6,11 +6,10 @@ import (
 	"time"
 
 	"backend/internal/model"
+	"backend/internal/repository"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // --- DTOs ---
@@ -59,23 +58,37 @@ type InvoiceService interface {
 }
 
 type invoiceService struct {
-	db *gorm.DB
+	invoiceRepo repository.InvoiceRepository
+	taxRuleRepo repository.TaxRuleRepository
+	orderRepo   repository.OrderRepository
+	expenseRepo repository.ExpenseRepository
+	txManager   repository.TransactionManager
 }
 
-func NewInvoiceService(db *gorm.DB) InvoiceService {
-	return &invoiceService{db: db}
+func NewInvoiceService(
+	invoiceRepo repository.InvoiceRepository,
+	taxRuleRepo repository.TaxRuleRepository,
+	orderRepo repository.OrderRepository,
+	expenseRepo repository.ExpenseRepository,
+	txManager repository.TransactionManager,
+) InvoiceService {
+	return &invoiceService{
+		invoiceRepo: invoiceRepo,
+		taxRuleRepo: taxRuleRepo,
+		orderRepo:   orderRepo,
+		expenseRepo: expenseRepo,
+		txManager:   txManager,
+	}
 }
 
 // --- Implementation ---
 
 func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceRequest) (InvoiceResponse, error) {
-	// Parse subtotal
 	subtotal, err := decimal.NewFromString(req.Subtotal)
 	if err != nil {
 		return InvoiceResponse{}, fmt.Errorf("invalid subtotal: %w", err)
 	}
 
-	// Parse side_fees (default to 0)
 	sideFees := decimal.Zero
 	if req.SideFees != "" {
 		sideFees, err = decimal.NewFromString(req.SideFees)
@@ -84,7 +97,6 @@ func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceReq
 		}
 	}
 
-	// Parse reference_id
 	refID, err := uuid.Parse(req.ReferenceID)
 	if err != nil {
 		return InvoiceResponse{}, fmt.Errorf("invalid reference_id: %w", err)
@@ -93,13 +105,11 @@ func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceReq
 	// Validate reference exists
 	switch req.ReferenceType {
 	case model.RefTypeOrderImport, model.RefTypeOrderExport:
-		var order model.Order
-		if err := s.db.WithContext(ctx).First(&order, "id = ?", refID).Error; err != nil {
+		if _, err := s.orderRepo.FindByIDWithItems(ctx, refID); err != nil {
 			return InvoiceResponse{}, fmt.Errorf("referenced order not found: %w", err)
 		}
 	case model.RefTypeExpense:
-		var expense model.Expense
-		if err := s.db.WithContext(ctx).First(&expense, "id = ?", refID).Error; err != nil {
+		if _, err := s.expenseRepo.FindByID(ctx, refID); err != nil {
 			return InvoiceResponse{}, fmt.Errorf("referenced expense not found: %w", err)
 		}
 	}
@@ -114,9 +124,8 @@ func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceReq
 		}
 		taxRuleID = &parsed
 
-		// Fetch tax rule rate
-		var taxRule model.TaxRule
-		if err := s.db.WithContext(ctx).First(&taxRule, "id = ?", parsed).Error; err != nil {
+		taxRule, err := s.taxRuleRepo.FindByID(ctx, parsed)
+		if err != nil {
 			return InvoiceResponse{}, fmt.Errorf("tax rule not found: %w", err)
 		}
 		taxAmount = subtotal.Mul(taxRule.Rate)
@@ -124,7 +133,6 @@ func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceReq
 
 	totalAmount := subtotal.Add(taxAmount).Add(sideFees)
 
-	// Generate invoice number: INV-YYYYMMDD-XXXXX
 	invoiceNo, err := s.generateInvoiceNo(ctx)
 	if err != nil {
 		return InvoiceResponse{}, fmt.Errorf("failed to generate invoice number: %w", err)
@@ -143,43 +151,29 @@ func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceReq
 		Note:           req.Note,
 	}
 
-	if err := s.db.WithContext(ctx).Create(&invoice).Error; err != nil {
+	if err := s.invoiceRepo.Create(ctx, &invoice); err != nil {
 		return InvoiceResponse{}, fmt.Errorf("failed to create invoice: %w", err)
 	}
 
 	// Reload with relations
-	if err := s.db.WithContext(ctx).Preload("TaxRule").First(&invoice, "id = ?", invoice.ID).Error; err != nil {
+	reloaded, err := s.invoiceRepo.FindByIDWithTaxRule(ctx, invoice.ID)
+	if err != nil {
 		return InvoiceResponse{}, fmt.Errorf("failed to reload invoice: %w", err)
 	}
 
-	return toInvoiceResponse(invoice), nil
+	return toInvoiceResponse(*reloaded), nil
 }
 
 func (s *invoiceService) ListInvoices(ctx context.Context, filter InvoiceFilter) ([]InvoiceResponse, int64, error) {
-	var total int64
-	countQuery := s.db.WithContext(ctx).Model(&model.Invoice{})
-	if filter.ApprovalStatus != "" {
-		countQuery = countQuery.Where("approval_status = ?", filter.ApprovalStatus)
-	}
-	if err := countQuery.Count(&total).Error; err != nil {
-		return nil, 0, fmt.Errorf("failed to count invoices: %w", err)
-	}
-
 	if filter.Page <= 0 {
 		filter.Page = 1
 	}
 	if filter.Limit <= 0 {
 		filter.Limit = 20
 	}
-	offset := (filter.Page - 1) * filter.Limit
 
-	query := s.db.WithContext(ctx).Preload("TaxRule").Order("created_at DESC").Offset(offset).Limit(filter.Limit)
-	if filter.ApprovalStatus != "" {
-		query = query.Where("approval_status = ?", filter.ApprovalStatus)
-	}
-
-	var invoices []model.Invoice
-	if err := query.Find(&invoices).Error; err != nil {
+	invoices, total, err := s.invoiceRepo.List(ctx, filter.ApprovalStatus, filter.Page, filter.Limit)
+	if err != nil {
 		return nil, 0, fmt.Errorf("failed to fetch invoices: %w", err)
 	}
 
@@ -209,11 +203,12 @@ func (s *invoiceService) updateApproval(ctx context.Context, id string, userID s
 		return InvoiceResponse{}, fmt.Errorf("invalid user id: %w", err)
 	}
 
-	var invoice model.Invoice
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Lock the row to prevent concurrent approval
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&invoice, "id = ?", invoiceID).Error; err != nil {
-			return fmt.Errorf("invoice not found: %w", err)
+	var invoice *model.Invoice
+	err = s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		var findErr error
+		invoice, findErr = s.invoiceRepo.FindByID(txCtx, invoiceID)
+		if findErr != nil {
+			return fmt.Errorf("invoice not found: %w", findErr)
 		}
 
 		if invoice.ApprovalStatus != model.ApprovalPending {
@@ -225,8 +220,8 @@ func (s *invoiceService) updateApproval(ctx context.Context, id string, userID s
 		invoice.ApprovedBy = &approverID
 		invoice.ApprovedAt = &now
 
-		if err := tx.Save(&invoice).Error; err != nil {
-			return fmt.Errorf("failed to update invoice: %w", err)
+		if updateErr := s.invoiceRepo.UpdateApproval(txCtx, invoice); updateErr != nil {
+			return fmt.Errorf("failed to update invoice: %w", updateErr)
 		}
 
 		return nil
@@ -237,30 +232,19 @@ func (s *invoiceService) updateApproval(ctx context.Context, id string, userID s
 	}
 
 	// Reload with relations outside transaction
-	if err := s.db.WithContext(ctx).Preload("TaxRule").First(&invoice, "id = ?", invoice.ID).Error; err != nil {
+	reloaded, err := s.invoiceRepo.FindByIDWithTaxRule(ctx, invoice.ID)
+	if err != nil {
 		return InvoiceResponse{}, fmt.Errorf("failed to reload invoice: %w", err)
 	}
 
-	return toInvoiceResponse(invoice), nil
+	return toInvoiceResponse(*reloaded), nil
 }
 
 func (s *invoiceService) generateInvoiceNo(ctx context.Context) (string, error) {
 	today := time.Now().Format("20060102")
 	prefix := "INV-" + today + "-"
 
-	// Use advisory lock to prevent concurrent duplicate invoice numbers
-	var count int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Acquire advisory lock based on hash of today's date
-		tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", prefix)
-
-		if err := tx.Model(&model.Invoice{}).
-			Where("invoice_no LIKE ?", prefix+"%").
-			Count(&count).Error; err != nil {
-			return err
-		}
-		return nil
-	})
+	count, err := s.invoiceRepo.CountByPrefix(ctx, prefix)
 	if err != nil {
 		return "", err
 	}

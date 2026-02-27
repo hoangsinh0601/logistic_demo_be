@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"backend/internal/model"
+	"backend/internal/repository"
 	ws "backend/internal/websocket"
 
 	"github.com/google/uuid"
@@ -65,32 +66,42 @@ type InventoryService interface {
 }
 
 type inventoryService struct {
-	db  *gorm.DB
-	hub *ws.Hub
+	productRepo  repository.ProductRepository
+	orderRepo    repository.OrderRepository
+	approvalRepo repository.ApprovalRepository
+	auditRepo    repository.AuditRepository
+	txManager    repository.TransactionManager
+	hub          *ws.Hub
 }
 
-// NewInventoryService returns a new instance of InventoryService
-func NewInventoryService(db *gorm.DB, hub *ws.Hub) InventoryService {
-	return &inventoryService{db: db, hub: hub}
-}
-
-// GetProducts returns paginated products with current stock
-func (s *inventoryService) GetProducts(ctx context.Context, page, limit int) ([]ProductResponse, int64, error) {
-	var total int64
-	if err := s.db.WithContext(ctx).Model(&model.Product{}).Count(&total).Error; err != nil {
-		return nil, 0, err
+func NewInventoryService(
+	productRepo repository.ProductRepository,
+	orderRepo repository.OrderRepository,
+	approvalRepo repository.ApprovalRepository,
+	auditRepo repository.AuditRepository,
+	txManager repository.TransactionManager,
+	hub *ws.Hub,
+) InventoryService {
+	return &inventoryService{
+		productRepo:  productRepo,
+		orderRepo:    orderRepo,
+		approvalRepo: approvalRepo,
+		auditRepo:    auditRepo,
+		txManager:    txManager,
+		hub:          hub,
 	}
+}
 
+func (s *inventoryService) GetProducts(ctx context.Context, page, limit int) ([]ProductResponse, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
 	if limit <= 0 {
 		limit = 20
 	}
-	offset := (page - 1) * limit
 
-	var products []model.Product
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Offset(offset).Limit(limit).Find(&products).Error; err != nil {
+	products, total, err := s.productRepo.List(ctx, page, limit)
+	if err != nil {
 		return nil, 0, err
 	}
 
@@ -108,7 +119,6 @@ func (s *inventoryService) GetProducts(ctx context.Context, page, limit int) ([]
 	return res, total, nil
 }
 
-// CreateProduct creates a new product in the system and logs the action
 func (s *inventoryService) CreateProduct(ctx context.Context, userID string, req CreateProductRequest) (ProductResponse, error) {
 	product := model.Product{
 		SKU:          req.SKU,
@@ -117,26 +127,25 @@ func (s *inventoryService) CreateProduct(ctx context.Context, userID string, req
 		CurrentStock: 0,
 	}
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&product).Error; err != nil {
+	err := s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.productRepo.Create(txCtx, &product); err != nil {
 			return fmt.Errorf("failed to create product: %w", err)
 		}
 
-		// Log Action
 		var uid *uuid.UUID
 		if parsed, err := uuid.Parse(userID); err == nil {
 			uid = &parsed
 		}
 
 		details, _ := json.Marshal(req)
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     uid,
 			Action:     model.ActionCreateProduct,
 			EntityID:   product.ID.String(),
 			EntityName: product.Name,
 			Details:    string(details),
 		}
-		if err := tx.Create(&audit).Error; err != nil {
+		if err := s.auditRepo.Log(txCtx, audit); err != nil {
 			return fmt.Errorf("failed to write audit log: %w", err)
 		}
 
@@ -156,10 +165,14 @@ func (s *inventoryService) CreateProduct(ctx context.Context, userID string, req
 	}, nil
 }
 
-// UpdateProduct updates product details like price and name, excluding stock mutations
 func (s *inventoryService) UpdateProduct(ctx context.Context, userID string, id string, req UpdateProductRequest) (ProductResponse, error) {
-	var product model.Product
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&product).Error; err != nil {
+	productID, err := uuid.Parse(id)
+	if err != nil {
+		return ProductResponse{}, fmt.Errorf("invalid product id: %w", err)
+	}
+
+	product, err := s.productRepo.FindByID(ctx, productID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ProductResponse{}, errors.New("product not found")
 		}
@@ -170,8 +183,8 @@ func (s *inventoryService) UpdateProduct(ctx context.Context, userID string, id 
 	product.Name = req.Name
 	product.Price = req.Price
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&product).Error; err != nil {
+	err = s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.productRepo.Update(txCtx, product); err != nil {
 			return fmt.Errorf("failed to update product: %w", err)
 		}
 
@@ -181,14 +194,14 @@ func (s *inventoryService) UpdateProduct(ctx context.Context, userID string, id 
 		}
 
 		details, _ := json.Marshal(req)
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     uid,
 			Action:     model.ActionUpdateProduct,
 			EntityID:   product.ID.String(),
 			EntityName: product.Name,
 			Details:    string(details),
 		}
-		if err := tx.Create(&audit).Error; err != nil {
+		if err := s.auditRepo.Log(txCtx, audit); err != nil {
 			return fmt.Errorf("failed to write audit log: %w", err)
 		}
 		return nil
@@ -207,18 +220,22 @@ func (s *inventoryService) UpdateProduct(ctx context.Context, userID string, id 
 	}, nil
 }
 
-// DeleteProduct soft-deletes the product from the database
 func (s *inventoryService) DeleteProduct(ctx context.Context, userID string, id string) error {
-	var product model.Product
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&product).Error; err != nil {
+	productID, err := uuid.Parse(id)
+	if err != nil {
+		return fmt.Errorf("invalid product id: %w", err)
+	}
+
+	product, err := s.productRepo.FindByID(ctx, productID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return errors.New("product not found")
 		}
 		return fmt.Errorf("database error: %w", err)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&product).Error; err != nil {
+	return s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.productRepo.Delete(txCtx, productID); err != nil {
 			return fmt.Errorf("failed to delete product: %w", err)
 		}
 
@@ -227,45 +244,23 @@ func (s *inventoryService) DeleteProduct(ctx context.Context, userID string, id 
 			uid = &parsed
 		}
 
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     uid,
 			Action:     model.ActionDeleteProduct,
 			EntityID:   product.ID.String(),
 			EntityName: product.Name,
 			Details:    `{"deleted": true}`,
 		}
-		if err := tx.Create(&audit).Error; err != nil {
+		if err := s.auditRepo.Log(txCtx, audit); err != nil {
 			return fmt.Errorf("failed to write audit log: %w", err)
 		}
 		return nil
 	})
 }
 
-// CreateOrder creates an order with PENDING_APPROVAL status and an ApprovalRequest.
-// Stock updates, inventory transactions, and invoice creation are deferred to the approval workflow.
 func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req CreateOrderRequest) error {
-	// Start a Database Transaction
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 1. Check if OrderCode already exists
-		var existing model.Order
-		if err := tx.Where("order_code = ?", req.OrderCode).First(&existing).Error; err == nil {
-			return errors.New("order_code already exists")
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-
-		// 2. Insert into `orders` with PENDING_APPROVAL status
-		order := model.Order{
-			OrderCode: req.OrderCode,
-			Type:      req.Type,
-			Note:      req.Note,
-			Status:    model.OrderStatusPendingApproval,
-		}
-		if err := tx.Create(&order).Error; err != nil {
-			return fmt.Errorf("failed to create order: %w", err)
-		}
-
-		// 3. Validate products and insert order items (NO stock update yet)
+	return s.txManager.RunInTx(ctx, func(txCtx context.Context) error {
+		// 1. Validate product exists for each item
 		var productNames []string
 		type OrderItemAudit struct {
 			ProductID   string  `json:"product_id"`
@@ -276,14 +271,16 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 		var auditItems []OrderItemAudit
 
 		for _, itemReq := range req.Items {
-			var product model.Product
-
-			// Validate product exists (no locking needed since we don't update stock)
-			if err := tx.Where("id = ?", itemReq.ProductID).First(&product).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
+			pid, parseErr := uuid.Parse(itemReq.ProductID)
+			if parseErr != nil {
+				return fmt.Errorf("invalid product_id: %w", parseErr)
+			}
+			product, findErr := s.productRepo.FindByID(txCtx, pid)
+			if findErr != nil {
+				if errors.Is(findErr, gorm.ErrRecordNotFound) {
 					return fmt.Errorf("product not found: %s", itemReq.ProductID)
 				}
-				return fmt.Errorf("failed to find product %s: %w", itemReq.ProductID, err)
+				return fmt.Errorf("failed to find product %s: %w", itemReq.ProductID, findErr)
 			}
 
 			productNames = append(productNames, product.Name)
@@ -293,20 +290,34 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 				Quantity:    itemReq.Quantity,
 				UnitPrice:   itemReq.UnitPrice,
 			})
+		}
 
-			// Insert order item
-			orderItem := model.OrderItem{
+		// 2. Create order
+		order := model.Order{
+			OrderCode: req.OrderCode,
+			Type:      req.Type,
+			Note:      req.Note,
+			Status:    model.OrderStatusPendingApproval,
+		}
+		if err := s.orderRepo.Create(txCtx, &order); err != nil {
+			return fmt.Errorf("failed to create order: %w", err)
+		}
+
+		// 3. Create order items
+		for _, itemReq := range req.Items {
+			pid, _ := uuid.Parse(itemReq.ProductID)
+			orderItem := &model.OrderItem{
 				OrderID:   order.ID,
-				ProductID: product.ID,
+				ProductID: pid,
 				Quantity:  itemReq.Quantity,
 				UnitPrice: itemReq.UnitPrice,
 			}
-			if err := tx.Create(&orderItem).Error; err != nil {
+			if err := s.orderRepo.CreateItem(txCtx, orderItem); err != nil {
 				return fmt.Errorf("failed to create order item: %w", err)
 			}
 		}
 
-		// 4. Insert Audit Log for Order
+		// 4. Audit log
 		var uid *uuid.UUID
 		if parsed, err := uuid.Parse(userID); err == nil {
 			uid = &parsed
@@ -324,18 +335,18 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			"items":      auditItems,
 		}
 		details, _ := json.Marshal(auditDetails)
-		audit := model.AuditLog{
+		audit := &model.AuditLog{
 			UserID:     uid,
 			Action:     actionType,
 			EntityID:   order.ID.String(),
 			EntityName: strings.Join(productNames, ", "),
 			Details:    string(details),
 		}
-		if err := tx.Create(&audit).Error; err != nil {
+		if err := s.auditRepo.Log(txCtx, audit); err != nil {
 			return fmt.Errorf("failed to record audit transaction: %w", err)
 		}
 
-		// 5. Create ApprovalRequest for this order
+		// 5. Create ApprovalRequest
 		requestData, _ := json.Marshal(map[string]interface{}{
 			"order_code":  req.OrderCode,
 			"type":        req.Type,
@@ -345,36 +356,34 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			"side_fees":   req.SideFees,
 		})
 
-		approvalReq := model.ApprovalRequest{
+		approvalReq := &model.ApprovalRequest{
 			RequestType: model.ApprovalReqTypeCreateOrder,
 			ReferenceID: order.ID,
 			RequestData: string(requestData),
 			Status:      model.ApprovalPending,
 			RequestedBy: uid,
 		}
-		if err := tx.Create(&approvalReq).Error; err != nil {
+		if err := s.approvalRepo.Create(txCtx, approvalReq); err != nil {
 			return fmt.Errorf("failed to create approval request: %w", err)
 		}
 
-		// 6. Audit log for approval request creation
+		// 6. Audit log for approval request
 		approvalDetails, _ := json.Marshal(map[string]interface{}{
 			"request_type": model.ApprovalReqTypeCreateOrder,
 			"reference_id": order.ID.String(),
 			"order_code":   req.OrderCode,
 		})
-		approvalAudit := model.AuditLog{
+		approvalAudit := &model.AuditLog{
 			UserID:     uid,
 			Action:     model.ActionCreateApprovalRequest,
 			EntityID:   approvalReq.ID.String(),
 			EntityName: model.ApprovalReqTypeCreateOrder,
 			Details:    string(approvalDetails),
 		}
-		if err := tx.Create(&approvalAudit).Error; err != nil {
+		if err := s.auditRepo.Log(txCtx, approvalAudit); err != nil {
 			return fmt.Errorf("failed to record approval audit: %w", err)
 		}
 
 		return nil
 	})
-
-	return err
 }

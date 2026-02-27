@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"backend/internal/model"
+	"backend/internal/repository"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -51,7 +52,7 @@ type ActiveTaxRateResponse struct {
 // --- Interface ---
 
 type TaxService interface {
-	GetTaxRules(ctx context.Context) ([]TaxRuleResponse, error)
+	GetTaxRules(ctx context.Context, page, limit int) ([]TaxRuleResponse, int64, error)
 	CreateTaxRule(ctx context.Context, req CreateTaxRuleRequest, userID string) (TaxRuleResponse, error)
 	UpdateTaxRule(ctx context.Context, id string, req UpdateTaxRuleRequest, userID string) (TaxRuleResponse, error)
 	DeleteTaxRule(ctx context.Context, id string, userID string) error
@@ -60,19 +61,20 @@ type TaxService interface {
 }
 
 type taxService struct {
-	db *gorm.DB
+	taxRuleRepo repository.TaxRuleRepository
+	auditRepo   repository.AuditRepository
 }
 
-func NewTaxService(db *gorm.DB) TaxService {
-	return &taxService{db: db}
+func NewTaxService(taxRuleRepo repository.TaxRuleRepository, auditRepo repository.AuditRepository) TaxService {
+	return &taxService{taxRuleRepo: taxRuleRepo, auditRepo: auditRepo}
 }
 
 // --- Implementation ---
 
-func (s *taxService) GetTaxRules(ctx context.Context) ([]TaxRuleResponse, error) {
-	var rules []model.TaxRule
-	if err := s.db.WithContext(ctx).Order("effective_from DESC").Find(&rules).Error; err != nil {
-		return nil, fmt.Errorf("failed to fetch tax rules: %w", err)
+func (s *taxService) GetTaxRules(ctx context.Context, page, limit int) ([]TaxRuleResponse, int64, error) {
+	rules, total, err := s.taxRuleRepo.List(ctx, page, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to fetch tax rules: %w", err)
 	}
 
 	res := make([]TaxRuleResponse, 0, len(rules))
@@ -80,7 +82,7 @@ func (s *taxService) GetTaxRules(ctx context.Context) ([]TaxRuleResponse, error)
 		res = append(res, toTaxRuleResponse(r))
 	}
 
-	return res, nil
+	return res, total, nil
 }
 
 func (s *taxService) CreateTaxRule(ctx context.Context, req CreateTaxRuleRequest, userID string) (TaxRuleResponse, error) {
@@ -90,8 +92,12 @@ func (s *taxService) CreateTaxRule(ctx context.Context, req CreateTaxRuleRequest
 	}
 
 	// Validate overlap
-	if err := s.checkOverlap(ctx, req.TaxType, effectiveFrom, effectiveTo, nil); err != nil {
-		return TaxRuleResponse{}, err
+	count, err := s.taxRuleRepo.FindOverlapping(ctx, req.TaxType, effectiveFrom, effectiveTo, nil)
+	if err != nil {
+		return TaxRuleResponse{}, fmt.Errorf("failed to check overlap: %w", err)
+	}
+	if count > 0 {
+		return TaxRuleResponse{}, fmt.Errorf("a tax rule for '%s' already exists with overlapping effective dates", req.TaxType)
 	}
 
 	rule := model.TaxRule{
@@ -102,11 +108,10 @@ func (s *taxService) CreateTaxRule(ctx context.Context, req CreateTaxRuleRequest
 		Description:   req.Description,
 	}
 
-	if err := s.db.WithContext(ctx).Create(&rule).Error; err != nil {
+	if err := s.taxRuleRepo.Create(ctx, &rule); err != nil {
 		return TaxRuleResponse{}, fmt.Errorf("failed to create tax rule: %w", err)
 	}
 
-	// Audit log
 	s.writeAuditLog(ctx, userID, model.ActionCreateTaxRule, rule.ID.String(), req.TaxType+" "+rate.StringFixed(4), req)
 
 	return toTaxRuleResponse(rule), nil
@@ -118,8 +123,8 @@ func (s *taxService) UpdateTaxRule(ctx context.Context, id string, req UpdateTax
 		return TaxRuleResponse{}, fmt.Errorf("invalid tax rule id: %w", err)
 	}
 
-	var rule model.TaxRule
-	if err := s.db.WithContext(ctx).First(&rule, "id = ?", ruleID).Error; err != nil {
+	rule, err := s.taxRuleRepo.FindByID(ctx, ruleID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return TaxRuleResponse{}, fmt.Errorf("tax rule not found")
 		}
@@ -132,8 +137,12 @@ func (s *taxService) UpdateTaxRule(ctx context.Context, id string, req UpdateTax
 	}
 
 	// Validate overlap (exclude self)
-	if err := s.checkOverlap(ctx, req.TaxType, effectiveFrom, effectiveTo, &ruleID); err != nil {
-		return TaxRuleResponse{}, err
+	count, err := s.taxRuleRepo.FindOverlapping(ctx, req.TaxType, effectiveFrom, effectiveTo, &ruleID)
+	if err != nil {
+		return TaxRuleResponse{}, fmt.Errorf("failed to check overlap: %w", err)
+	}
+	if count > 0 {
+		return TaxRuleResponse{}, fmt.Errorf("a tax rule for '%s' already exists with overlapping effective dates", req.TaxType)
 	}
 
 	rule.TaxType = req.TaxType
@@ -142,14 +151,13 @@ func (s *taxService) UpdateTaxRule(ctx context.Context, id string, req UpdateTax
 	rule.EffectiveTo = effectiveTo
 	rule.Description = req.Description
 
-	if err := s.db.WithContext(ctx).Save(&rule).Error; err != nil {
+	if err := s.taxRuleRepo.Update(ctx, rule); err != nil {
 		return TaxRuleResponse{}, fmt.Errorf("failed to update tax rule: %w", err)
 	}
 
-	// Audit log
 	s.writeAuditLog(ctx, userID, model.ActionUpdateTaxRule, rule.ID.String(), req.TaxType+" "+rate.StringFixed(4), req)
 
-	return toTaxRuleResponse(rule), nil
+	return toTaxRuleResponse(*rule), nil
 }
 
 func (s *taxService) DeleteTaxRule(ctx context.Context, id string, userID string) error {
@@ -158,34 +166,26 @@ func (s *taxService) DeleteTaxRule(ctx context.Context, id string, userID string
 		return fmt.Errorf("invalid tax rule id: %w", err)
 	}
 
-	var rule model.TaxRule
-	if err := s.db.WithContext(ctx).First(&rule, "id = ?", ruleID).Error; err != nil {
+	rule, err := s.taxRuleRepo.FindByID(ctx, ruleID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("tax rule not found")
 		}
 		return fmt.Errorf("failed to fetch tax rule: %w", err)
 	}
 
-	if err := s.db.WithContext(ctx).Delete(&rule).Error; err != nil {
+	if err := s.taxRuleRepo.Delete(ctx, ruleID); err != nil {
 		return fmt.Errorf("failed to delete tax rule: %w", err)
 	}
 
-	// Audit log
 	s.writeAuditLog(ctx, userID, model.ActionDeleteTaxRule, rule.ID.String(), rule.TaxType+" "+rule.Rate.StringFixed(4), map[string]string{"deleted_id": id})
 
 	return nil
 }
 
 func (s *taxService) GetActiveTaxRate(ctx context.Context, taxType string) (*ActiveTaxRateResponse, error) {
-	var rule model.TaxRule
 	now := time.Now()
-
-	err := s.db.WithContext(ctx).
-		Where("tax_type = ? AND effective_from <= ? AND (effective_to IS NULL OR effective_to >= ?)",
-			taxType, now, now).
-		Order("effective_from DESC").
-		First(&rule).Error
-
+	rule, err := s.taxRuleRepo.FindActiveByType(ctx, taxType, now)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil // No active rate — not an error
@@ -200,17 +200,8 @@ func (s *taxService) GetActiveTaxRate(ctx context.Context, taxType string) (*Act
 	}, nil
 }
 
-// CalculateActiveTax finds the active tax rate for a given type and date.
-// Query: effective_from <= targetDate AND (effective_to IS NULL OR effective_to >= targetDate)
 func (s *taxService) CalculateActiveTax(ctx context.Context, taxType string, targetDate time.Time) (decimal.Decimal, error) {
-	var rule model.TaxRule
-
-	err := s.db.WithContext(ctx).
-		Where("tax_type = ? AND effective_from <= ? AND (effective_to IS NULL OR effective_to >= ?)",
-			taxType, targetDate, targetDate).
-		Order("effective_from DESC").
-		First(&rule).Error
-
+	rule, err := s.taxRuleRepo.FindActiveByType(ctx, taxType, targetDate)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return decimal.Zero, fmt.Errorf("no active tax rule found for type '%s' on date %s", taxType, targetDate.Format("2006-01-02"))
@@ -246,33 +237,6 @@ func parseTaxRuleFields(rateStr, fromStr, toStr string) (decimal.Decimal, time.T
 	return rate, effectiveFrom, effectiveTo, nil
 }
 
-func (s *taxService) checkOverlap(ctx context.Context, taxType string, from time.Time, to *time.Time, excludeID *uuid.UUID) error {
-	query := s.db.WithContext(ctx).Model(&model.TaxRule{}).
-		Where("tax_type = ?", taxType).
-		Where("effective_from <= ?", func() time.Time {
-			if to != nil {
-				return *to
-			}
-			return time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
-		}()).
-		Where("(effective_to IS NULL OR effective_to >= ?)", from)
-
-	if excludeID != nil {
-		query = query.Where("id != ?", *excludeID)
-	}
-
-	var count int64
-	if err := query.Count(&count).Error; err != nil {
-		return fmt.Errorf("failed to check overlap: %w", err)
-	}
-
-	if count > 0 {
-		return fmt.Errorf("a tax rule for '%s' already exists with overlapping effective dates", taxType)
-	}
-
-	return nil
-}
-
 func toTaxRuleResponse(r model.TaxRule) TaxRuleResponse {
 	resp := TaxRuleResponse{
 		ID:            r.ID.String(),
@@ -306,8 +270,8 @@ func (s *taxService) writeAuditLog(ctx context.Context, userID, action, entityID
 		}
 	}
 
-	// Best-effort audit log — don't fail the operation if logging fails
-	_ = s.db.WithContext(ctx).Create(&log).Error
+	// Best-effort audit log
+	_ = s.auditRepo.Log(ctx, &log)
 }
 
 // Ensure uuid import is used in DTO context (compiler safeguard)

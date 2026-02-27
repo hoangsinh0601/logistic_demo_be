@@ -3,9 +3,7 @@ package service
 import (
 	"context"
 
-	"backend/internal/model"
-
-	"gorm.io/gorm"
+	"backend/internal/repository"
 )
 
 type AuditLogResponse struct {
@@ -24,26 +22,16 @@ type AuditService interface {
 }
 
 type auditService struct {
-	db *gorm.DB
+	auditRepo repository.AuditRepository
 }
 
-// NewAuditService creates a new AuditService instance
-func NewAuditService(db *gorm.DB) AuditService {
-	return &auditService{db: db}
+func NewAuditService(auditRepo repository.AuditRepository) AuditService {
+	return &auditService{auditRepo: auditRepo}
 }
 
-// GetAuditLogs retrieves strictly paginated records with Users pre-loaded joining details
 func (s *auditService) GetAuditLogs(ctx context.Context, page, limit int) ([]AuditLogResponse, int64, error) {
-	var logs []model.AuditLog
-	var total int64
-
-	// Count total records
-	if err := s.db.WithContext(ctx).Model(&model.AuditLog{}).Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	offset := (page - 1) * limit
-	if err := s.db.WithContext(ctx).Preload("User").Order("created_at desc").Offset(offset).Limit(limit).Find(&logs).Error; err != nil {
+	logs, total, err := s.auditRepo.List(ctx, page, limit)
+	if err != nil {
 		return nil, 0, err
 	}
 

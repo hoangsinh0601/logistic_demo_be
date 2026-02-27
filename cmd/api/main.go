@@ -98,21 +98,35 @@ func main() {
 	}
 	log.Println("Connected to Database successfully.")
 
-	// 6. Initialize Services & Handlers (synchronous, on main goroutine)
+	// 6. Initialize Repositories
+	txManager := repository.NewTransactionManager(db)
+	userRepo := repository.NewUserRepository(db)
+	productRepo := repository.NewProductRepository(db)
+	orderRepo := repository.NewOrderRepository(db)
+	auditRepo := repository.NewAuditRepository(db)
+	taxRuleRepo := repository.NewTaxRuleRepository(db)
+	expenseRepo := repository.NewExpenseRepository(db)
+	invoiceRepo := repository.NewInvoiceRepository(db)
+	approvalRepo := repository.NewApprovalRepository(db)
+	roleRepo := repository.NewRoleRepository(db)
+	invTxRepo := repository.NewInventoryTxRepository(db)
+	statsRepo := repository.NewStatisticsRepository(db)
+	revenueRepo := repository.NewRevenueRepository(db)
+
+	// 7. Initialize Services & Handlers
 	wsHub := websocket.NewHub()
 	go wsHub.Run()
 
-	userRepo := repository.NewUserRepository(db)
 	userService := service.NewUserService(userRepo)
-	inventoryService := service.NewInventoryService(db, wsHub)
-	auditService := service.NewAuditService(db)
-	statisticsService := service.NewStatisticsService(db)
-	taxService := service.NewTaxService(db)
-	expenseService := service.NewExpenseService(db, taxService)
-	roleService := service.NewRoleService(db)
-	invoiceService := service.NewInvoiceService(db)
-	revenueService := service.NewRevenueService(db)
-	approvalService := service.NewApprovalService(db)
+	inventoryService := service.NewInventoryService(productRepo, orderRepo, approvalRepo, auditRepo, txManager, wsHub)
+	auditService := service.NewAuditService(auditRepo)
+	statisticsService := service.NewStatisticsService(statsRepo)
+	taxService := service.NewTaxService(taxRuleRepo, auditRepo)
+	expenseService := service.NewExpenseService(expenseRepo, auditRepo, approvalRepo, txManager, taxService)
+	roleService := service.NewRoleService(roleRepo, txManager)
+	invoiceService := service.NewInvoiceService(invoiceRepo, taxRuleRepo, orderRepo, expenseRepo, txManager)
+	revenueService := service.NewRevenueService(revenueRepo)
+	approvalService := service.NewApprovalService(approvalRepo, auditRepo, orderRepo, productRepo, expenseRepo, invoiceRepo, taxRuleRepo, invTxRepo, txManager)
 
 	// Seed default roles and permissions
 	if seedErr := roleService.SeedDefaultRolesAndPermissions(context.Background()); seedErr != nil {
@@ -132,7 +146,7 @@ func main() {
 	invoiceHandler := handler.NewInvoiceHandler(invoiceService, revenueService)
 	approvalHandler := handler.NewApprovalHandler(approvalService)
 
-	// 7. Register API Routes (synchronous — guaranteed available before serving)
+	// 8. Register API Routes (synchronous — guaranteed available before serving)
 	apiGroup := router.Group("")
 	userHandler.RegisterRoutes(apiGroup)
 	inventoryHandler.RegisterRoutes(apiGroup)
@@ -151,7 +165,7 @@ func main() {
 
 	log.Println("All routes registered successfully.")
 
-	// 8. Graceful Shutdown with http.Server
+	// 9. Graceful Shutdown with http.Server
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: router,
