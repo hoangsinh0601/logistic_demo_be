@@ -61,7 +61,7 @@ func (s *revenueService) GetRevenueStatistics(ctx context.Context, filter Revenu
 	result := make([]RevenueDataPoint, 0, len(rows))
 	for _, r := range rows {
 		result = append(result, RevenueDataPoint{
-			Period:            fmt.Sprintf("%.0f", r.Period),
+			Period:            r.Period,
 			TotalRevenue:      fmt.Sprintf("%.4f", r.TotalRevenue),
 			TotalExpense:      fmt.Sprintf("%.4f", r.TotalExpense),
 			TotalTaxCollected: fmt.Sprintf("%.4f", r.TotalTaxCollected),

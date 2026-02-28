@@ -8,7 +8,7 @@ import (
 )
 
 type RevenueDataRow struct {
-	Period            float64 `gorm:"column:period"`
+	Period            string  `gorm:"column:period"`
 	TotalRevenue      float64 `gorm:"column:total_revenue"`
 	TotalExpense      float64 `gorm:"column:total_expense"`
 	TotalTaxCollected float64 `gorm:"column:total_tax_collected"`
