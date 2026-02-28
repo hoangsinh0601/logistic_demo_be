@@ -52,6 +52,7 @@ type ApprovalRequestResponse struct {
 type ApprovalService interface {
 	CreateApprovalRequest(ctx context.Context, req CreateApprovalRequestDTO) (ApprovalRequestResponse, error)
 	ListApprovalRequests(ctx context.Context, filter ApprovalFilter) ([]ApprovalRequestResponse, int64, error)
+	GetApprovalRequest(ctx context.Context, id string) (ApprovalRequestResponse, error)
 	ApproveRequest(ctx context.Context, id string, userID string) (ApprovalRequestResponse, error)
 	RejectRequest(ctx context.Context, id string, userID string, reason string) (ApprovalRequestResponse, error)
 }
@@ -172,6 +173,20 @@ func (s *approvalService) ListApprovalRequests(ctx context.Context, filter Appro
 	}
 
 	return result, total, nil
+}
+
+func (s *approvalService) GetApprovalRequest(ctx context.Context, id string) (ApprovalRequestResponse, error) {
+	approvalID, err := uuid.Parse(id)
+	if err != nil {
+		return ApprovalRequestResponse{}, fmt.Errorf("invalid approval request id: %w", err)
+	}
+
+	approval, err := s.approvalRepo.FindByIDWithRelations(ctx, approvalID)
+	if err != nil {
+		return ApprovalRequestResponse{}, fmt.Errorf("approval request not found: %w", err)
+	}
+
+	return toApprovalResponse(*approval), nil
 }
 
 func (s *approvalService) ApproveRequest(ctx context.Context, id string, userID string) (ApprovalRequestResponse, error) {

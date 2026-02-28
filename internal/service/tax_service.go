@@ -52,7 +52,7 @@ type ActiveTaxRateResponse struct {
 // --- Interface ---
 
 type TaxService interface {
-	GetTaxRules(ctx context.Context, page, limit int) ([]TaxRuleResponse, int64, error)
+	GetTaxRules(ctx context.Context, search string, page, limit int) ([]TaxRuleResponse, int64, error)
 	CreateTaxRule(ctx context.Context, req CreateTaxRuleRequest, userID string) (TaxRuleResponse, error)
 	UpdateTaxRule(ctx context.Context, id string, req UpdateTaxRuleRequest, userID string) (TaxRuleResponse, error)
 	DeleteTaxRule(ctx context.Context, id string, userID string) error
@@ -71,8 +71,8 @@ func NewTaxService(taxRuleRepo repository.TaxRuleRepository, auditRepo repositor
 
 // --- Implementation ---
 
-func (s *taxService) GetTaxRules(ctx context.Context, page, limit int) ([]TaxRuleResponse, int64, error) {
-	rules, total, err := s.taxRuleRepo.List(ctx, page, limit)
+func (s *taxService) GetTaxRules(ctx context.Context, search string, page, limit int) ([]TaxRuleResponse, int64, error) {
+	rules, total, err := s.taxRuleRepo.List(ctx, search, page, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to fetch tax rules: %w", err)
 	}

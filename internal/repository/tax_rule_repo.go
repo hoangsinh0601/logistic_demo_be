@@ -15,7 +15,7 @@ type TaxRuleRepository interface {
 	Update(ctx context.Context, rule *model.TaxRule) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	FindByID(ctx context.Context, id uuid.UUID) (*model.TaxRule, error)
-	List(ctx context.Context, page, limit int) ([]model.TaxRule, int64, error)
+	List(ctx context.Context, search string, page, limit int) ([]model.TaxRule, int64, error)
 	FindActiveByType(ctx context.Context, taxType string, targetDate time.Time) (*model.TaxRule, error)
 	FindOverlapping(ctx context.Context, taxType string, from time.Time, to *time.Time, excludeID *uuid.UUID) (int64, error)
 }
@@ -48,17 +48,25 @@ func (r *taxRuleRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.
 	return &rule, nil
 }
 
-func (r *taxRuleRepository) List(ctx context.Context, page, limit int) ([]model.TaxRule, int64, error) {
+func (r *taxRuleRepository) List(ctx context.Context, search string, page, limit int) ([]model.TaxRule, int64, error) {
 	var rules []model.TaxRule
 	var total int64
 
 	db := GetDB(ctx, r.db)
-	if err := db.Model(&model.TaxRule{}).Count(&total).Error; err != nil {
+	query := db.Model(&model.TaxRule{})
+	if search != "" {
+		query = query.Where("description ILIKE ?", "%"+search+"%")
+	}
+	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
-	if err := db.Order("effective_from desc").Offset(offset).Limit(limit).Find(&rules).Error; err != nil {
+	fetchQuery := db.Model(&model.TaxRule{})
+	if search != "" {
+		fetchQuery = fetchQuery.Where("description ILIKE ?", "%"+search+"%")
+	}
+	if err := fetchQuery.Order("effective_from desc").Offset(offset).Limit(limit).Find(&rules).Error; err != nil {
 		return nil, 0, err
 	}
 

@@ -23,6 +23,7 @@ func (h *ApprovalHandler) RegisterRoutes(router *gin.RouterGroup) {
 	approvals := router.Group("/api/approvals")
 	{
 		approvals.GET("", middleware.RequirePermission("approvals.read"), h.ListApprovalRequests)
+		approvals.GET("/:id", middleware.RequirePermission("approvals.read"), h.GetApprovalRequest)
 		approvals.PUT("/:id/approve", middleware.RequirePermission("approvals.approve"), h.ApproveRequest)
 		approvals.PUT("/:id/reject", middleware.RequirePermission("approvals.approve"), h.RejectRequest)
 	}
@@ -62,6 +63,29 @@ func (h *ApprovalHandler) ListApprovalRequests(c *gin.Context) {
 		"page":  page,
 		"limit": limit,
 	}))
+}
+
+// GetApprovalRequest returns a single approval request by ID
+// @Summary      Get approval request detail
+// @Description  Retrieves a single approval request by ID with full details
+// @Tags         approvals
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id   path      string  true  "Approval Request ID"
+// @Success      200  {object}  response.Response{data=service.ApprovalRequestResponse}
+// @Failure      400  {object}  response.Response
+// @Failure      404  {object}  response.Response
+// @Router       /api/approvals/{id} [get]
+func (h *ApprovalHandler) GetApprovalRequest(c *gin.Context) {
+	id := c.Param("id")
+
+	result, err := h.approvalService.GetApprovalRequest(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, response.Error(http.StatusNotFound, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, response.Success(http.StatusOK, result))
 }
 
 // ApproveRequest approves a pending approval request

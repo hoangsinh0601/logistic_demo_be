@@ -36,8 +36,9 @@ func (h *TaxHandler) RegisterRoutes(router *gin.RouterGroup) {
 // @Tags         tax-rules
 // @Security     BearerAuth
 // @Produce      json
-// @Param        page   query     int  false  "Page number (default: 1)"
-// @Param        limit  query     int  false  "Items per page (default: 20)"
+// @Param        page    query     int     false  "Page number (default: 1)"
+// @Param        limit   query     int     false  "Items per page (default: 20)"
+// @Param        search  query     string  false  "Search by description"
 // @Success      200  {object}  response.Response{data=[]service.TaxRuleResponse}
 // @Failure      500  {object}  response.Response
 // @Router       /api/tax-rules [get]
@@ -55,7 +56,9 @@ func (h *TaxHandler) GetTaxRules(c *gin.Context) {
 		}
 	}
 
-	rules, total, err := h.taxService.GetTaxRules(c.Request.Context(), page, limit)
+	search := c.Query("search")
+
+	rules, total, err := h.taxService.GetTaxRules(c.Request.Context(), search, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, err.Error()))
 		return
