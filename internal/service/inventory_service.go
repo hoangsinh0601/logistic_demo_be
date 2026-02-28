@@ -23,12 +23,15 @@ type OrderItemRequest struct {
 }
 
 type CreateOrderRequest struct {
-	OrderCode string             `json:"order_code" binding:"required"`
-	Type      string             `json:"type" binding:"required,oneof=IMPORT EXPORT"`
-	Note      string             `json:"note"`
-	Items     []OrderItemRequest `json:"items" binding:"required,min=1,dive"`
-	TaxRuleID string             `json:"tax_rule_id"` // Optional: user-selected tax rule for invoice
-	SideFees  string             `json:"side_fees"`   // Optional: additional fees
+	OrderCode         string             `json:"order_code" binding:"required"`
+	Type              string             `json:"type" binding:"required,oneof=IMPORT EXPORT"`
+	Note              string             `json:"note"`
+	Items             []OrderItemRequest `json:"items" binding:"required,min=1,dive"`
+	TaxRuleID         string             `json:"tax_rule_id"`         // Optional: user-selected tax rule for invoice
+	SideFees          string             `json:"side_fees"`           // Optional: additional fees
+	PartnerID         string             `json:"partner_id"`          // Optional: selected partner
+	OriginAddressID   string             `json:"origin_address_id"`   // Optional: ORIGIN address
+	ShippingAddressID string             `json:"shipping_address_id"` // Optional: SHIPPING address
 }
 
 type CreateProductRequest struct {
@@ -70,6 +73,7 @@ type inventoryService struct {
 	orderRepo    repository.OrderRepository
 	approvalRepo repository.ApprovalRepository
 	auditRepo    repository.AuditRepository
+	partnerRepo  repository.PartnerRepository
 	txManager    repository.TransactionManager
 	hub          *ws.Hub
 }
@@ -79,6 +83,7 @@ func NewInventoryService(
 	orderRepo repository.OrderRepository,
 	approvalRepo repository.ApprovalRepository,
 	auditRepo repository.AuditRepository,
+	partnerRepo repository.PartnerRepository,
 	txManager repository.TransactionManager,
 	hub *ws.Hub,
 ) InventoryService {
@@ -87,6 +92,7 @@ func NewInventoryService(
 		orderRepo:    orderRepo,
 		approvalRepo: approvalRepo,
 		auditRepo:    auditRepo,
+		partnerRepo:  partnerRepo,
 		txManager:    txManager,
 		hub:          hub,
 	}
@@ -292,18 +298,75 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			})
 		}
 
-		// 2. Create order
+		// 2. Validate Partner (if provided)
+		var partnerID *uuid.UUID
+		var originAddrID, shippingAddrID *uuid.UUID
+
+		if req.PartnerID != "" {
+			pid, parseErr := uuid.Parse(req.PartnerID)
+			if parseErr != nil {
+				return fmt.Errorf("invalid partner_id: %w", parseErr)
+			}
+			partner, findErr := s.partnerRepo.FindByID(txCtx, pid)
+			if findErr != nil {
+				return fmt.Errorf("partner not found: %w", findErr)
+			}
+			partnerID = &pid
+
+			// Validate origin address belongs to this partner
+			if req.OriginAddressID != "" {
+				oid, parseErr := uuid.Parse(req.OriginAddressID)
+				if parseErr != nil {
+					return fmt.Errorf("invalid origin_address_id: %w", parseErr)
+				}
+				found := false
+				for _, addr := range partner.Addresses {
+					if addr.ID == oid {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("origin address does not belong to the selected partner")
+				}
+				originAddrID = &oid
+			}
+
+			// Validate shipping address belongs to this partner
+			if req.ShippingAddressID != "" {
+				sid, parseErr := uuid.Parse(req.ShippingAddressID)
+				if parseErr != nil {
+					return fmt.Errorf("invalid shipping_address_id: %w", parseErr)
+				}
+				found := false
+				for _, addr := range partner.Addresses {
+					if addr.ID == sid {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("shipping address does not belong to the selected partner")
+				}
+				shippingAddrID = &sid
+			}
+		}
+
+		// 3. Create order with partner references
 		order := model.Order{
-			OrderCode: req.OrderCode,
-			Type:      req.Type,
-			Note:      req.Note,
-			Status:    model.OrderStatusPendingApproval,
+			OrderCode:         req.OrderCode,
+			Type:              req.Type,
+			Note:              req.Note,
+			Status:            model.OrderStatusPendingApproval,
+			PartnerID:         partnerID,
+			OriginAddressID:   originAddrID,
+			ShippingAddressID: shippingAddrID,
 		}
 		if err := s.orderRepo.Create(txCtx, &order); err != nil {
 			return fmt.Errorf("failed to create order: %w", err)
 		}
 
-		// 3. Create order items
+		// 4. Create order items
 		for _, itemReq := range req.Items {
 			pid, _ := uuid.Parse(itemReq.ProductID)
 			orderItem := &model.OrderItem{
@@ -317,7 +380,7 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			}
 		}
 
-		// 4. Audit log
+		// 5. Audit log
 		var uid *uuid.UUID
 		if parsed, err := uuid.Parse(userID); err == nil {
 			uid = &parsed
@@ -346,15 +409,36 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			return fmt.Errorf("failed to record audit transaction: %w", err)
 		}
 
-		// 5. Create ApprovalRequest
-		requestData, _ := json.Marshal(map[string]interface{}{
-			"order_code":  req.OrderCode,
-			"type":        req.Type,
-			"note":        req.Note,
-			"items":       auditItems,
-			"tax_rule_id": req.TaxRuleID,
-			"side_fees":   req.SideFees,
-		})
+		approvalData := map[string]interface{}{
+			"order_code":          req.OrderCode,
+			"type":                req.Type,
+			"note":                req.Note,
+			"items":               auditItems,
+			"tax_rule_id":         req.TaxRuleID,
+			"side_fees":           req.SideFees,
+			"partner_id":          req.PartnerID,
+			"origin_address_id":   req.OriginAddressID,
+			"shipping_address_id": req.ShippingAddressID,
+		}
+
+		// Enrich with readable partner info for display in approval detail
+		if partnerID != nil {
+			if p, err := s.partnerRepo.FindByID(txCtx, *partnerID); err == nil {
+				approvalData["partner_name"] = p.Name
+				approvalData["company_name"] = p.CompanyName
+				approvalData["tax_code"] = p.TaxCode
+				for _, addr := range p.Addresses {
+					if originAddrID != nil && addr.ID == *originAddrID {
+						approvalData["origin_address"] = addr.FullAddress
+					}
+					if shippingAddrID != nil && addr.ID == *shippingAddrID {
+						approvalData["shipping_address"] = addr.FullAddress
+					}
+				}
+			}
+		}
+
+		requestData, _ := json.Marshal(approvalData)
 
 		approvalReq := &model.ApprovalRequest{
 			RequestType: model.ApprovalReqTypeCreateOrder,
@@ -367,7 +451,7 @@ func (s *inventoryService) CreateOrder(ctx context.Context, userID string, req C
 			return fmt.Errorf("failed to create approval request: %w", err)
 		}
 
-		// 6. Audit log for approval request
+		// 7. Audit log for approval request
 		approvalDetails, _ := json.Marshal(map[string]interface{}{
 			"request_type": model.ApprovalReqTypeCreateOrder,
 			"reference_id": order.ID.String(),

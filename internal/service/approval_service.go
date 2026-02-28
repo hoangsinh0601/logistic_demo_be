@@ -66,6 +66,7 @@ type approvalService struct {
 	invoiceRepo  repository.InvoiceRepository
 	taxRuleRepo  repository.TaxRuleRepository
 	invTxRepo    repository.InventoryTxRepository
+	partnerRepo  repository.PartnerRepository
 	txManager    repository.TransactionManager
 }
 
@@ -78,6 +79,7 @@ func NewApprovalService(
 	invoiceRepo repository.InvoiceRepository,
 	taxRuleRepo repository.TaxRuleRepository,
 	invTxRepo repository.InventoryTxRepository,
+	partnerRepo repository.PartnerRepository,
 	txManager repository.TransactionManager,
 ) ApprovalService {
 	return &approvalService{
@@ -89,6 +91,7 @@ func NewApprovalService(
 		invoiceRepo:  invoiceRepo,
 		taxRuleRepo:  taxRuleRepo,
 		invTxRepo:    invTxRepo,
+		partnerRepo:  partnerRepo,
 		txManager:    txManager,
 	}
 }
@@ -457,6 +460,23 @@ func (s *approvalService) executeOrderApproval(ctx context.Context, approval mod
 		ApprovedBy:     approverID,
 		ApprovedAt:     approval.ApprovedAt,
 		Note:           order.Note,
+	}
+
+	// Populate partner hard-copy fields from the order's partner
+	if order.PartnerID != nil {
+		invoice.PartnerID = order.PartnerID
+		partner, partnerErr := s.partnerRepo.FindByID(ctx, *order.PartnerID)
+		if partnerErr == nil {
+			invoice.CompanyName = partner.CompanyName
+			invoice.TaxCode = partner.TaxCode
+			// Find first BILLING address
+			for _, addr := range partner.Addresses {
+				if addr.AddressType == model.AddressTypeBilling {
+					invoice.BillingAddress = addr.FullAddress
+					break
+				}
+			}
+		}
 	}
 	if createErr := s.invoiceRepo.Create(ctx, invoice); createErr != nil {
 		return fmt.Errorf("failed to create invoice: %w", createErr)

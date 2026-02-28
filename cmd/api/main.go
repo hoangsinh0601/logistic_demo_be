@@ -112,21 +112,23 @@ func main() {
 	invTxRepo := repository.NewInventoryTxRepository(db)
 	statsRepo := repository.NewStatisticsRepository(db)
 	revenueRepo := repository.NewRevenueRepository(db)
+	partnerRepo := repository.NewPartnerRepository(db)
 
 	// 7. Initialize Services & Handlers
 	wsHub := websocket.NewHub()
 	go wsHub.Run()
 
 	userService := service.NewUserService(userRepo)
-	inventoryService := service.NewInventoryService(productRepo, orderRepo, approvalRepo, auditRepo, txManager, wsHub)
+	inventoryService := service.NewInventoryService(productRepo, orderRepo, approvalRepo, auditRepo, partnerRepo, txManager, wsHub)
 	auditService := service.NewAuditService(auditRepo)
 	statisticsService := service.NewStatisticsService(statsRepo)
 	taxService := service.NewTaxService(taxRuleRepo, auditRepo)
 	expenseService := service.NewExpenseService(expenseRepo, auditRepo, approvalRepo, txManager, taxService)
 	roleService := service.NewRoleService(roleRepo, txManager)
-	invoiceService := service.NewInvoiceService(invoiceRepo, taxRuleRepo, orderRepo, expenseRepo, txManager)
+	invoiceService := service.NewInvoiceService(invoiceRepo, taxRuleRepo, orderRepo, expenseRepo, partnerRepo, txManager)
 	revenueService := service.NewRevenueService(revenueRepo)
-	approvalService := service.NewApprovalService(approvalRepo, auditRepo, orderRepo, productRepo, expenseRepo, invoiceRepo, taxRuleRepo, invTxRepo, txManager)
+	approvalService := service.NewApprovalService(approvalRepo, auditRepo, orderRepo, productRepo, expenseRepo, invoiceRepo, taxRuleRepo, invTxRepo, partnerRepo, txManager)
+	partnerService := service.NewPartnerService(partnerRepo, txManager)
 
 	// Seed default roles and permissions
 	if seedErr := roleService.SeedDefaultRolesAndPermissions(context.Background()); seedErr != nil {
@@ -145,6 +147,7 @@ func main() {
 	roleHandler := handler.NewRoleHandler(roleService)
 	invoiceHandler := handler.NewInvoiceHandler(invoiceService, revenueService)
 	approvalHandler := handler.NewApprovalHandler(approvalService)
+	partnerHandler := handler.NewPartnerHandler(partnerService)
 
 	// 8. Register API Routes (synchronous — guaranteed available before serving)
 	apiGroup := router.Group("")
@@ -157,6 +160,7 @@ func main() {
 	roleHandler.RegisterRoutes(apiGroup)
 	invoiceHandler.RegisterRoutes(apiGroup)
 	approvalHandler.RegisterRoutes(apiGroup)
+	partnerHandler.RegisterRoutes(apiGroup)
 
 	// WebSocket endpoint
 	router.GET("/ws", func(c *gin.Context) {

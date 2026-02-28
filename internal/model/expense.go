@@ -29,9 +29,9 @@ type Expense struct {
 
 	// Currency & Exchange Rate
 	Currency           string          `gorm:"type:varchar(10);not null;default:'USD'" json:"currency"`
-	ExchangeRate       decimal.Decimal `gorm:"type:decimal(18,6);not null;default:1" json:"exchange_rate"`                          // 1 if USD
-	OriginalAmount     decimal.Decimal `gorm:"type:decimal(18,4);not null" json:"original_amount"`                                  // Amount in original currency
-	ConvertedAmountUSD decimal.Decimal `gorm:"column:converted_amount_usd;type:decimal(18,4);not null" json:"converted_amount_usd"` // = original_amount * exchange_rate
+	ExchangeRate       decimal.Decimal `gorm:"type:decimal(18,6);not null;default:1" json:"exchange_rate"`                                    // 1 if USD
+	OriginalAmount     decimal.Decimal `gorm:"type:decimal(18,4);not null" json:"original_amount"`                                            // Amount in original currency
+	ConvertedAmountUSD decimal.Decimal `gorm:"column:converted_amount_usd;type:decimal(18,4);not null;default:0" json:"converted_amount_usd"` // = original_amount * exchange_rate
 
 	// FCT (Foreign Contractor Tax)
 	IsForeignVendor bool            `gorm:"default:false" json:"is_foreign_vendor"`

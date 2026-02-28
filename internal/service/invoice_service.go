@@ -47,7 +47,19 @@ type InvoiceResponse struct {
 	ApprovedBy     *string `json:"approved_by"`
 	ApprovedAt     *string `json:"approved_at"`
 	Note           string  `json:"note"`
+	PartnerID      *string `json:"partner_id"`
+	CompanyName    string  `json:"company_name"`
+	TaxCode        string  `json:"tax_code"`
+	BillingAddress string  `json:"billing_address"`
 	CreatedAt      string  `json:"created_at"`
+}
+
+// UpdateInvoiceRequest allows editing partner hard-copy fields on PENDING invoices
+type UpdateInvoiceRequest struct {
+	CompanyName    *string `json:"company_name"`
+	TaxCode        *string `json:"tax_code"`
+	BillingAddress *string `json:"billing_address"`
+	Note           *string `json:"note"`
 }
 
 // --- Interface ---
@@ -57,6 +69,7 @@ type InvoiceService interface {
 	ListInvoices(ctx context.Context, filter InvoiceFilter) ([]InvoiceResponse, int64, error)
 	ApproveInvoice(ctx context.Context, id string, userID string) (InvoiceResponse, error)
 	RejectInvoice(ctx context.Context, id string, userID string) (InvoiceResponse, error)
+	UpdateInvoice(ctx context.Context, id string, req UpdateInvoiceRequest) (InvoiceResponse, error)
 }
 
 type invoiceService struct {
@@ -64,6 +77,7 @@ type invoiceService struct {
 	taxRuleRepo repository.TaxRuleRepository
 	orderRepo   repository.OrderRepository
 	expenseRepo repository.ExpenseRepository
+	partnerRepo repository.PartnerRepository
 	txManager   repository.TransactionManager
 }
 
@@ -72,6 +86,7 @@ func NewInvoiceService(
 	taxRuleRepo repository.TaxRuleRepository,
 	orderRepo repository.OrderRepository,
 	expenseRepo repository.ExpenseRepository,
+	partnerRepo repository.PartnerRepository,
 	txManager repository.TransactionManager,
 ) InvoiceService {
 	return &invoiceService{
@@ -79,6 +94,7 @@ func NewInvoiceService(
 		taxRuleRepo: taxRuleRepo,
 		orderRepo:   orderRepo,
 		expenseRepo: expenseRepo,
+		partnerRepo: partnerRepo,
 		txManager:   txManager,
 	}
 }
@@ -151,6 +167,26 @@ func (s *invoiceService) CreateInvoice(ctx context.Context, req CreateInvoiceReq
 		TotalAmount:    totalAmount,
 		ApprovalStatus: model.ApprovalPending,
 		Note:           req.Note,
+	}
+
+	// Auto-fill partner hard-copy fields from the Order's partner (if applicable)
+	if req.ReferenceType == model.RefTypeOrderImport || req.ReferenceType == model.RefTypeOrderExport {
+		order, orderErr := s.orderRepo.FindByIDWithItems(ctx, refID)
+		if orderErr == nil && order.PartnerID != nil {
+			partner, partnerErr := s.partnerRepo.FindByID(ctx, *order.PartnerID)
+			if partnerErr == nil {
+				invoice.PartnerID = order.PartnerID
+				invoice.CompanyName = partner.CompanyName
+				invoice.TaxCode = partner.TaxCode
+				// Find first BILLING address
+				for _, addr := range partner.Addresses {
+					if addr.AddressType == model.AddressTypeBilling {
+						invoice.BillingAddress = addr.FullAddress
+						break
+					}
+				}
+			}
+		}
 	}
 
 	if err := s.invoiceRepo.Create(ctx, &invoice); err != nil {
@@ -262,6 +298,49 @@ func (s *invoiceService) generateInvoiceNo(ctx context.Context) (string, error) 
 
 // --- Helpers ---
 
+// UpdateInvoice allows editing partner hard-copy fields on a PENDING invoice before issuing
+func (s *invoiceService) UpdateInvoice(ctx context.Context, id string, req UpdateInvoiceRequest) (InvoiceResponse, error) {
+	invoiceID, err := uuid.Parse(id)
+	if err != nil {
+		return InvoiceResponse{}, fmt.Errorf("invalid invoice id: %w", err)
+	}
+
+	invoice, err := s.invoiceRepo.FindByID(ctx, invoiceID)
+	if err != nil {
+		return InvoiceResponse{}, fmt.Errorf("invoice not found: %w", err)
+	}
+
+	if invoice.ApprovalStatus != model.ApprovalPending {
+		return InvoiceResponse{}, fmt.Errorf("cannot edit invoice with status %s", invoice.ApprovalStatus)
+	}
+
+	if req.CompanyName != nil {
+		invoice.CompanyName = *req.CompanyName
+	}
+	if req.TaxCode != nil {
+		invoice.TaxCode = *req.TaxCode
+	}
+	if req.BillingAddress != nil {
+		invoice.BillingAddress = *req.BillingAddress
+	}
+	if req.Note != nil {
+		invoice.Note = *req.Note
+	}
+
+	if err := s.invoiceRepo.Update(ctx, invoice); err != nil {
+		return InvoiceResponse{}, fmt.Errorf("failed to update invoice: %w", err)
+	}
+
+	reloaded, err := s.invoiceRepo.FindByIDWithTaxRule(ctx, invoiceID)
+	if err != nil {
+		return InvoiceResponse{}, fmt.Errorf("failed to reload invoice: %w", err)
+	}
+
+	return toInvoiceResponse(*reloaded), nil
+}
+
+// --- Mapping ---
+
 func toInvoiceResponse(inv model.Invoice) InvoiceResponse {
 	resp := InvoiceResponse{
 		ID:             inv.ID.String(),
@@ -274,6 +353,9 @@ func toInvoiceResponse(inv model.Invoice) InvoiceResponse {
 		TotalAmount:    inv.TotalAmount.StringFixed(4),
 		ApprovalStatus: inv.ApprovalStatus,
 		Note:           inv.Note,
+		CompanyName:    inv.CompanyName,
+		TaxCode:        inv.TaxCode,
+		BillingAddress: inv.BillingAddress,
 		CreatedAt:      inv.CreatedAt.Format(time.RFC3339),
 	}
 
@@ -285,6 +367,10 @@ func toInvoiceResponse(inv model.Invoice) InvoiceResponse {
 		resp.TaxType = &inv.TaxRule.TaxType
 		rate := inv.TaxRule.Rate.StringFixed(4)
 		resp.TaxRate = &rate
+	}
+	if inv.PartnerID != nil {
+		s := inv.PartnerID.String()
+		resp.PartnerID = &s
 	}
 	if inv.ApprovedBy != nil {
 		s := inv.ApprovedBy.String()

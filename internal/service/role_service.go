@@ -249,6 +249,9 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 		{Code: "approvals.read", Name: "Xem Yêu cầu duyệt", Group: "approvals"},
 		{Code: "approvals.approve", Name: "Duyệt / Từ chối yêu cầu", Group: "approvals"},
 		{Code: "finance.read", Name: "Xem Báo cáo Tài chính", Group: "finance"},
+		{Code: "partners.read", Name: "Xem Đối tác", Group: "partners"},
+		{Code: "partners.write", Name: "Quản lý Đối tác", Group: "partners"},
+		{Code: "partners.delete", Name: "Xóa Đối tác", Group: "partners"},
 	}
 
 	// Upsert permissions
@@ -279,6 +282,7 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 				"invoices.read", "invoices.write",
 				"approvals.read", "approvals.approve",
 				"finance.read",
+				"partners.read", "partners.write", "partners.delete",
 			},
 		},
 		"manager": {
@@ -292,6 +296,7 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 				"invoices.read", "invoices.write",
 				"approvals.read", "approvals.approve",
 				"finance.read",
+				"partners.read", "partners.write",
 			},
 		},
 		"staff": {
@@ -303,6 +308,7 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 				"audit.read",
 				"invoices.read",
 				"approvals.read",
+				"partners.read",
 			},
 		},
 	}

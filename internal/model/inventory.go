@@ -34,14 +34,20 @@ const (
 
 // Order represents an inventory transaction request (Import/Export)
 type Order struct {
-	ID        uuid.UUID   `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	OrderCode string      `gorm:"type:varchar(100);uniqueIndex;not null" json:"order_code"`
-	Type      string      `gorm:"type:varchar(20);not null" json:"type"` // IMPORT, EXPORT
-	Status    string      `gorm:"type:varchar(50);default:'COMPLETED'" json:"status"`
-	Note      string      `gorm:"type:text" json:"note"`
-	Items     []OrderItem `gorm:"foreignKey:OrderID" json:"items"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID                uuid.UUID       `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	OrderCode         string          `gorm:"type:varchar(100);uniqueIndex;not null" json:"order_code"`
+	Type              string          `gorm:"type:varchar(20);not null" json:"type"` // IMPORT, EXPORT
+	Status            string          `gorm:"type:varchar(50);default:'COMPLETED'" json:"status"`
+	Note              string          `gorm:"type:text" json:"note"`
+	PartnerID         *uuid.UUID      `gorm:"type:uuid;index" json:"partner_id"`
+	Partner           *Partner        `gorm:"foreignKey:PartnerID" json:"partner,omitempty"`
+	OriginAddressID   *uuid.UUID      `gorm:"type:uuid" json:"origin_address_id"`
+	OriginAddress     *PartnerAddress `gorm:"foreignKey:OriginAddressID" json:"origin_address,omitempty"`
+	ShippingAddressID *uuid.UUID      `gorm:"type:uuid" json:"shipping_address_id"`
+	ShippingAddress   *PartnerAddress `gorm:"foreignKey:ShippingAddressID" json:"shipping_address,omitempty"`
+	Items             []OrderItem     `gorm:"foreignKey:OrderID" json:"items"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 // OrderItem represents a line item within an Order

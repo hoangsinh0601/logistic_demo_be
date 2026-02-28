@@ -29,6 +29,7 @@ func (h *InvoiceHandler) RegisterRoutes(router *gin.RouterGroup) {
 	{
 		invoices.POST("", middleware.RequirePermission("invoices.write"), h.CreateInvoice)
 		invoices.GET("", middleware.RequirePermission("invoices.read"), h.ListInvoices)
+		invoices.PUT("/:id", middleware.RequirePermission("invoices.write"), h.UpdateInvoice)
 		invoices.PUT("/:id/approve", middleware.RequirePermission("approvals.approve"), h.ApproveInvoice)
 		invoices.PUT("/:id/reject", middleware.RequirePermission("approvals.approve"), h.RejectInvoice)
 	}
@@ -65,6 +66,24 @@ func (h *InvoiceHandler) CreateInvoice(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, response.Success(http.StatusCreated, invoice))
+}
+
+// UpdateInvoice updates partner hard-copy fields on a PENDING invoice
+func (h *InvoiceHandler) UpdateInvoice(c *gin.Context) {
+	id := c.Param("id")
+	var req service.UpdateInvoiceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, "Invalid payload: "+err.Error()))
+		return
+	}
+
+	invoice, err := h.invoiceService.UpdateInvoice(c.Request.Context(), id, req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, response.Error(http.StatusBadRequest, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, response.Success(http.StatusOK, invoice))
 }
 
 // ListInvoices returns a paginated list of invoices, optionally filtered by approval_status

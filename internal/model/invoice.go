@@ -39,6 +39,12 @@ type Invoice struct {
 	Approver       *User           `gorm:"foreignKey:ApprovedBy" json:"approver,omitempty"`
 	ApprovedAt     *time.Time      `json:"approved_at"`
 	Note           string          `gorm:"type:text" json:"note"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	// --- Partner hard-copy fields (snapshot at invoice creation) ---
+	PartnerID      *uuid.UUID `gorm:"type:uuid;index" json:"partner_id"`
+	Partner        *Partner   `gorm:"foreignKey:PartnerID" json:"partner,omitempty"`
+	CompanyName    string     `gorm:"type:varchar(255)" json:"company_name"`
+	TaxCode        string     `gorm:"type:varchar(50)" json:"tax_code"`
+	BillingAddress string     `gorm:"type:text" json:"billing_address"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }

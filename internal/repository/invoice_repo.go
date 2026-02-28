@@ -15,6 +15,7 @@ type InvoiceRepository interface {
 	FindByIDWithTaxRule(ctx context.Context, id uuid.UUID) (*model.Invoice, error)
 	List(ctx context.Context, filter InvoiceListFilter) ([]model.Invoice, int64, error)
 	UpdateApproval(ctx context.Context, invoice *model.Invoice) error
+	Update(ctx context.Context, invoice *model.Invoice) error
 	CountByPrefix(ctx context.Context, prefix string) (int64, error)
 }
 
@@ -40,7 +41,7 @@ func (r *invoiceRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.
 
 func (r *invoiceRepository) FindByIDWithTaxRule(ctx context.Context, id uuid.UUID) (*model.Invoice, error) {
 	var invoice model.Invoice
-	if err := GetDB(ctx, r.db).Preload("TaxRule").First(&invoice, "id = ?", id).Error; err != nil {
+	if err := GetDB(ctx, r.db).Preload("TaxRule").Preload("Partner").First(&invoice, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &invoice, nil
@@ -76,7 +77,7 @@ func (r *invoiceRepository) List(ctx context.Context, filter InvoiceListFilter) 
 	}
 
 	offset := (filter.Page - 1) * filter.Limit
-	fetchQuery := db.Preload("TaxRule")
+	fetchQuery := db.Preload("TaxRule").Preload("Partner")
 	if filter.ApprovalStatus != "" {
 		fetchQuery = fetchQuery.Where("approval_status = ?", filter.ApprovalStatus)
 	}
@@ -94,6 +95,10 @@ func (r *invoiceRepository) List(ctx context.Context, filter InvoiceListFilter) 
 }
 
 func (r *invoiceRepository) UpdateApproval(ctx context.Context, invoice *model.Invoice) error {
+	return GetDB(ctx, r.db).Save(invoice).Error
+}
+
+func (r *invoiceRepository) Update(ctx context.Context, invoice *model.Invoice) error {
 	return GetDB(ctx, r.db).Save(invoice).Error
 }
 
