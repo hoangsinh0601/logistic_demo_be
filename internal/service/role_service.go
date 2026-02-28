@@ -336,6 +336,15 @@ func (s *roleService) SeedDefaultRolesAndPermissions(ctx context.Context) error 
 		}
 	}
 
+	// Cleanup: remove stale permissions not in the default list
+	validCodes := make([]string, 0, len(defaultPermissions))
+	for _, p := range defaultPermissions {
+		validCodes = append(validCodes, p.Code)
+	}
+	if err := s.roleRepo.DeletePermissionsNotInCodes(ctx, validCodes); err != nil {
+		return fmt.Errorf("failed to cleanup stale permissions: %w", err)
+	}
+
 	return nil
 }
 

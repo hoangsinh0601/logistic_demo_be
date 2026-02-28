@@ -21,6 +21,7 @@ type RoleRepository interface {
 	UpdatePermissions(ctx context.Context, roleID uuid.UUID, permissionIDs []uuid.UUID) error
 	GetPermissionsByRoleName(ctx context.Context, roleName string) ([]string, error)
 	FindOrCreatePermission(ctx context.Context, perm *model.Permission) error
+	DeletePermissionsNotInCodes(ctx context.Context, validCodes []string) error
 	AssociatePermissions(ctx context.Context, roleID uuid.UUID, permIDs []uuid.UUID) error
 }
 
@@ -116,6 +117,19 @@ func (r *roleRepository) FindOrCreatePermission(ctx context.Context, perm *model
 	return GetDB(ctx, r.db).
 		Where("code = ?", perm.Code).
 		FirstOrCreate(perm).Error
+}
+
+func (r *roleRepository) DeletePermissionsNotInCodes(ctx context.Context, validCodes []string) error {
+	db := GetDB(ctx, r.db)
+	// Remove stale permissions from role_permissions join table first
+	if err := db.Exec(
+		"DELETE FROM role_permissions WHERE permission_id IN (SELECT id FROM permissions WHERE code NOT IN (?))",
+		validCodes,
+	).Error; err != nil {
+		return err
+	}
+	// Then delete the stale permission records themselves
+	return db.Where("code NOT IN (?)", validCodes).Delete(&model.Permission{}).Error
 }
 
 func (r *roleRepository) AssociatePermissions(ctx context.Context, roleID uuid.UUID, permIDs []uuid.UUID) error {
