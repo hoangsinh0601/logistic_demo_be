@@ -16,7 +16,7 @@ type ProductRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	FindByID(ctx context.Context, id uuid.UUID) (*model.Product, error)
 	FindBySKU(ctx context.Context, sku string) (*model.Product, error)
-	List(ctx context.Context, page, limit int) ([]model.Product, int64, error)
+	List(ctx context.Context, page, limit int, search string) ([]model.Product, int64, error)
 	UpdateStock(ctx context.Context, id uuid.UUID, stock int) error
 	FindByIDForUpdate(ctx context.Context, id uuid.UUID) (*model.Product, error)
 }
@@ -57,12 +57,16 @@ func (r *productRepository) FindBySKU(ctx context.Context, sku string) (*model.P
 	return &product, nil
 }
 
-func (r *productRepository) List(ctx context.Context, page, limit int) ([]model.Product, int64, error) {
+func (r *productRepository) List(ctx context.Context, page, limit int, search string) ([]model.Product, int64, error) {
 	var products []model.Product
 	var total int64
 
-	db := GetDB(ctx, r.db)
-	if err := db.Model(&model.Product{}).Count(&total).Error; err != nil {
+	db := GetDB(ctx, r.db).Model(&model.Product{})
+	if search != "" {
+		db = db.Where("name ILIKE ?", "%"+search+"%")
+	}
+
+	if err := db.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 

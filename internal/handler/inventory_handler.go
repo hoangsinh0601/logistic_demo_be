@@ -36,16 +36,18 @@ func (h *InventoryHandler) RegisterRoutes(router *gin.RouterGroup) {
 // @Tags         inventory
 // @Security     BearerAuth
 // @Produce      json
-// @Param        page   query     int  false  "Page number (default 1)"
-// @Param        limit  query     int  false  "Number of items per page (default 20)"
+// @Param        page    query     int     false  "Page number (default 1)"
+// @Param        limit   query     int     false  "Number of items per page (default 20)"
+// @Param        search  query     string  false  "Search by product name"
 // @Success      200    {object}  response.Response{data=object}
 // @Failure      500    {object}  response.Response
 // @Router       /api/products [get]
 func (h *InventoryHandler) GetProducts(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	search := c.Query("search")
 
-	products, total, err := h.inventoryService.GetProducts(c.Request.Context(), page, limit)
+	products, total, err := h.inventoryService.GetProducts(c.Request.Context(), page, limit, search)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, response.Error(http.StatusInternalServerError, "Failed to retrieve products: "+err.Error()))
 		return

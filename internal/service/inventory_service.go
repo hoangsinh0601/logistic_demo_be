@@ -58,7 +58,7 @@ type InventoryEvent struct {
 }
 
 type InventoryService interface {
-	GetProducts(ctx context.Context, page, limit int) ([]ProductResponse, int64, error)
+	GetProducts(ctx context.Context, page, limit int, search string) ([]ProductResponse, int64, error)
 	CreateProduct(ctx context.Context, userID string, req CreateProductRequest) (ProductResponse, error)
 	UpdateProduct(ctx context.Context, userID string, id string, req UpdateProductRequest) (ProductResponse, error)
 	DeleteProduct(ctx context.Context, userID string, id string) error
@@ -92,7 +92,7 @@ func NewInventoryService(
 	}
 }
 
-func (s *inventoryService) GetProducts(ctx context.Context, page, limit int) ([]ProductResponse, int64, error) {
+func (s *inventoryService) GetProducts(ctx context.Context, page, limit int, search string) ([]ProductResponse, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -100,7 +100,7 @@ func (s *inventoryService) GetProducts(ctx context.Context, page, limit int) ([]
 		limit = 20
 	}
 
-	products, total, err := s.productRepo.List(ctx, page, limit)
+	products, total, err := s.productRepo.List(ctx, page, limit, search)
 	if err != nil {
 		return nil, 0, err
 	}
