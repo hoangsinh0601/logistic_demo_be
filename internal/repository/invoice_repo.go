@@ -13,7 +13,7 @@ type InvoiceRepository interface {
 	Create(ctx context.Context, invoice *model.Invoice) error
 	FindByID(ctx context.Context, id uuid.UUID) (*model.Invoice, error)
 	FindByIDWithTaxRule(ctx context.Context, id uuid.UUID) (*model.Invoice, error)
-	List(ctx context.Context, status string, page, limit int) ([]model.Invoice, int64, error)
+	List(ctx context.Context, filter InvoiceListFilter) ([]model.Invoice, int64, error)
 	UpdateApproval(ctx context.Context, invoice *model.Invoice) error
 	CountByPrefix(ctx context.Context, prefix string) (int64, error)
 }
@@ -46,26 +46,47 @@ func (r *invoiceRepository) FindByIDWithTaxRule(ctx context.Context, id uuid.UUI
 	return &invoice, nil
 }
 
-func (r *invoiceRepository) List(ctx context.Context, status string, page, limit int) ([]model.Invoice, int64, error) {
+// InvoiceListFilter holds filters for listing invoices
+type InvoiceListFilter struct {
+	ApprovalStatus string
+	InvoiceNo      string
+	ReferenceType  string
+	Page           int
+	Limit          int
+}
+
+func (r *invoiceRepository) List(ctx context.Context, filter InvoiceListFilter) ([]model.Invoice, int64, error) {
 	var invoices []model.Invoice
 	var total int64
 
 	db := GetDB(ctx, r.db)
 	query := db.Model(&model.Invoice{})
-	if status != "" {
-		query = query.Where("approval_status = ?", status)
+	if filter.ApprovalStatus != "" {
+		query = query.Where("approval_status = ?", filter.ApprovalStatus)
+	}
+	if filter.InvoiceNo != "" {
+		query = query.Where("invoice_no ILIKE ?", "%"+filter.InvoiceNo+"%")
+	}
+	if filter.ReferenceType != "" {
+		query = query.Where("reference_type = ?", filter.ReferenceType)
 	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
-	offset := (page - 1) * limit
+	offset := (filter.Page - 1) * filter.Limit
 	fetchQuery := db.Preload("TaxRule")
-	if status != "" {
-		fetchQuery = fetchQuery.Where("approval_status = ?", status)
+	if filter.ApprovalStatus != "" {
+		fetchQuery = fetchQuery.Where("approval_status = ?", filter.ApprovalStatus)
 	}
-	if err := fetchQuery.Order("created_at desc").Offset(offset).Limit(limit).Find(&invoices).Error; err != nil {
+	if filter.InvoiceNo != "" {
+		fetchQuery = fetchQuery.Where("invoice_no ILIKE ?", "%"+filter.InvoiceNo+"%")
+	}
+	if filter.ReferenceType != "" {
+		fetchQuery = fetchQuery.Where("reference_type = ?", filter.ReferenceType)
+	}
+	if err := fetchQuery.Order("created_at desc").Offset(offset).Limit(filter.Limit).Find(&invoices).Error; err != nil {
 		return nil, 0, err
 	}
 

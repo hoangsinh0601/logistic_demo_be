@@ -25,6 +25,8 @@ type CreateInvoiceRequest struct {
 
 type InvoiceFilter struct {
 	ApprovalStatus string // PENDING, APPROVED, REJECTED or empty for all
+	InvoiceNo      string // partial match on invoice_no
+	ReferenceType  string // ORDER_IMPORT, ORDER_EXPORT, EXPENSE or empty for all
 	Page           int
 	Limit          int
 }
@@ -172,7 +174,13 @@ func (s *invoiceService) ListInvoices(ctx context.Context, filter InvoiceFilter)
 		filter.Limit = 20
 	}
 
-	invoices, total, err := s.invoiceRepo.List(ctx, filter.ApprovalStatus, filter.Page, filter.Limit)
+	invoices, total, err := s.invoiceRepo.List(ctx, repository.InvoiceListFilter{
+		ApprovalStatus: filter.ApprovalStatus,
+		InvoiceNo:      filter.InvoiceNo,
+		ReferenceType:  filter.ReferenceType,
+		Page:           filter.Page,
+		Limit:          filter.Limit,
+	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to fetch invoices: %w", err)
 	}

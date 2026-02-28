@@ -73,9 +73,11 @@ func (h *InvoiceHandler) CreateInvoice(c *gin.Context) {
 // @Tags         invoices
 // @Security     BearerAuth
 // @Produce      json
-// @Param        status  query     string  false  "Filter by approval status (PENDING, APPROVED, REJECTED)"
-// @Param        page    query     int     false  "Page number (default 1)"
-// @Param        limit   query     int     false  "Number of items per page (default 20)"
+// @Param        status      query     string  false  "Filter by approval status (PENDING, APPROVED, REJECTED)"
+// @Param        invoice_no  query     string  false  "Search by invoice number"
+// @Param        ref_type    query     string  false  "Filter by reference type (ORDER_IMPORT, ORDER_EXPORT, EXPENSE)"
+// @Param        page        query     int     false  "Page number (default 1)"
+// @Param        limit       query     int     false  "Number of items per page (default 20)"
 // @Success      200     {object}  response.Response{data=object}
 // @Failure      500     {object}  response.Response
 // @Router       /api/invoices [get]
@@ -85,6 +87,8 @@ func (h *InvoiceHandler) ListInvoices(c *gin.Context) {
 
 	filter := service.InvoiceFilter{
 		ApprovalStatus: c.Query("status"),
+		InvoiceNo:      c.Query("invoice_no"),
+		ReferenceType:  c.Query("ref_type"),
 		Page:           page,
 		Limit:          limit,
 	}
